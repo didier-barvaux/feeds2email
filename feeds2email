@@ -1,0 +1,431 @@
+#!/bin/bash
+#
+# Copyright (c) 2015 Didier Barvaux
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+# ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+#
+# Name:         feeds2email
+# Description:  fetch RSS or Atom feeds and send new articles by email
+# Dependencies: bash, curl, xmlstarlet, Python html2text, logger, md5sum, awk,
+#               sed, tr, mail, and mktemp.
+# Author:       Didier Barvaux <didier@barvaux.org>
+# License:      Simplified BSD License
+#
+# Thanks to thuban <thuban@yeuxdelibad.net> and his srss software for the ideas:
+#   http://git.yeuxdelibad.net/srss/
+#
+
+SCRIPT_NAME="feeds2email"
+SCRIPT_VERSION="0.1"
+SCRIPT_URI="https://github.com/didier-barvaux/${SCRIPT_NAME}"
+
+F2E_CONFIG_DIR="${HOME}/.config/${SCRIPT_NAME}"
+F2E_CACHE_DIR="${HOME}/.cache/${SCRIPT_NAME}"
+
+F2E_LOG_FACILITY="local1"
+F2E_NETWORK_TRIES=2
+F2E_NETWORK_TIMEOUT=30 # in seconds
+F2E_NETWORK_MAX_FILE_SIZE=$(( 1 * 1024 * 1024 )) # 1 MByte
+F2E_USER_AGENT="${SCRIPT_NAME}/${SCRIPT_VERSION} (${SCRIPT_URI})"
+
+F2E_FEEDLIST_FILE="${F2E_CONFIG_DIR}/feedlist" # one feed url per line
+F2E_FEEDS_DIR="${F2E_CACHE_DIR}/feeds"
+
+SEP="---.---"
+
+
+f2e_print_usage()
+{
+	echo "Send news feeds by email"
+	echo ""
+	echo "Fetch all RSS or Atom feeds listed in \$HOME/.config/${SCRIPT_NAME}/feedlist"
+	echo "and send new articles to the given email. Feeds are recorded in the"
+	echo "\$HOME/.cache/${SCRIPT_NAME}/ cache directory."
+	echo ""
+	echo "Usage: ${SCRIPT_NAME} [options] email-to email-from"
+	echo ""
+	echo "Options:"
+	echo "  email-to       Send feeds to this email address"
+	echo "  email-from     Send feeds from this email address"
+	echo "  -h, --help     Print this help message"
+	echo "  -q, --quiet    Run in quiet mode"
+	echo "  -v, --version  Print software version and quit"
+	echo ""
+	echo "Examples:"
+	echo "  ${SCRIPT_NAME} --help                                                          Print software usage"
+	echo "  ${SCRIPT_NAME} --version                                                       Print software version"
+	echo "  ${SCRIPT_NAME} john.snow@example.com ${SCRIPT_NAME}@example.com                Send new articles to John Snow from a specific email address"
+	echo "  ${SCRIPT_NAME} 'John Snow <john.snow@example.com>' ${SCRIPT_NAME}@example.com  Send new articles to John Snow with his full name and from a specific email address"
+	echo "  ${SCRIPT_NAME} -q john.snow@example.com ${SCRIPT_NAME}@example.com             Run in quiet mode"
+	echo ""
+	echo "Report bugs to <${SCRIPT_URI}>."
+}
+
+f2e_log()
+{
+	local log_level="$1"
+	local log_msg="$2"
+	local do_print_stderr="-s"
+
+	case "${log_level}" in
+		err|warn|notice)
+			;;
+		*)
+			[ ${f2e_is_quiet} -eq 1 ] && do_print_stderr=""
+			;;
+	esac
+	logger ${do_print_stderr} -t "${SCRIPT_NAME}" -p ${F2E_LOG_FACILITY}.${log_level} "${log_msg}"
+}
+
+f2e_feed_download()
+{
+	local feed_uri="$1"
+	local feed_output_file="$2"
+	local feed_last_modified
+	local feed_etag
+
+	if [ -f "${feed_output_file}.last_modified" ] ; then
+		feed_last_modified=" $( cat "${feed_output_file}.last_modified" )"
+	else
+		feed_last_modified=""
+	fi
+
+	if [ -f "${feed_output_file}.etag" ] ; then
+		feed_etag=" $( cat "${feed_output_file}.etag" )"
+	else
+		feed_etag=""
+	fi
+
+	curl --silent \
+	     --proto -all,https,+http \
+	     --compressed \
+	     --location \
+	     --user-agent "${F2E_USER_AGENT}" \
+	     --referer "${SCRIPT_URI}" \
+	     --header "If-Modified-Since:${feed_last_modified}" \
+	     --header "If-None-Match:${feed_etag}" \
+	     --retry ${F2E_NETWORK_TRIES} \
+	     --max-time ${F2E_NETWORK_TIMEOUT} \
+	     --max-filesize ${F2E_NETWORK_MAX_FILE_SIZE} \
+	     --dump-header "${feed_output_file}.headers" \
+	     --stderr "${feed_output_file}.stderr" \
+	     --output "${feed_output_file}" \
+	     "${feed_uri}"
+	ret=$?
+
+	if [ ${ret} -eq 0 ] ; then
+		feed_last_modified="$( grep -E "^Last-Modified: " "${feed_output_file}.headers" | \
+		                       tail -n 1 | \
+		                       awk '{ $1="" ; print $0 }' | \
+		                       sed -e 's/^ *//' | \
+		                       tr -d '\r' )"
+		if [ -z "${feed_last_modified}" ] ; then
+			rm -f "${feed_output_file}.last_modified"
+		else
+			echo -n "${feed_last_modified}" > "${feed_output_file}.last_modified"
+		fi
+
+		feed_etag="$( grep -E "^ETag: " "${feed_output_file}.headers" | \
+		              tail -n 1 | \
+		              awk '{ $1="" ; print $0 }' | \
+		              sed -e 's/^ *//' | \
+		              tr -d '\r' )"
+		if [ -z "${feed_etag}" ] ; then
+			rm -f "${feed_output_file}.etag"
+		else
+			echo -n "${feed_etag}" > "${feed_output_file}.etag"
+		fi
+	fi
+
+	return ${ret}
+}
+
+f2e_get_feeds()
+{
+	local feeds_max_nr=$( wc -l < "${F2E_FEEDLIST_FILE}" )
+	local feeds_nr
+	local feed_uri
+
+	f2e_log "info" "downloading feeds"
+	feeds_nr=1
+	while read feed_uri ; do
+		local feed_type="unknown"
+		local feed_title
+		local feed_hash
+		local feed_dir
+		local feed_file
+		local feed_line
+		local feed_item_content
+		local feed_item_title
+
+		f2e_log "info" "* [${feeds_nr}/${feeds_max_nr}] ${feed_uri}"
+
+		# compute a (probably) unique hash for the feed
+		feed_hash="$( echo "${feed_uri}" | md5sum | awk '{ print $1 }' )"
+		ret=$?
+		if [ ${ret} -ne 0 ] ; then
+			f2e_log "err" "failed to compute hash for feed '${feed_uri}' (${ret})"
+			feeds_nr=$(( ${feeds_nr} + 1 ))
+			continue
+		fi
+		feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
+
+		mkdir -p "${feed_dir}"
+		echo "${feed_uri}" > "${feed_dir}/uri"
+
+		# download the feed content
+		feed_file="${feed_dir}/feed.xml"
+		f2e_feed_download "${feed_uri}" "${feed_file}"
+		ret=$?
+		if [ ${ret} -ne 0 ] ; then
+			f2e_log "notice" "failed to download feed '${feed_uri}' (${ret})"
+			feeds_nr=$(( ${feeds_nr} + 1 ))
+			continue
+		fi
+
+		# detect feed type:
+		# try RSS first...
+		feed_title="$( xmlstarlet sel -t -m "/rss/channel" -v "title" < "${feed_file}" )"
+		if [ $? -eq 0 ] ; then
+			feed_type="RSS"
+		else
+			# maybe Atom?
+			feed_title="$( xmlstarlet sel -N x="http://www.w3.org/2005/Atom" \
+			               -t -m "/x:feed" -v "x:title" < "${feed_file}" )"
+			if [ $? -eq 0 ] ; then
+				feed_type="Atom"
+			fi
+		fi
+
+		# write title in the cache for later use
+		echo "${feed_title}" > "${feed_dir}/title"
+		# print it on console for info
+		f2e_log "info" "  ${feed_title} [${feed_type}]"
+
+		# parse feed items/entries
+		if [ "${feed_type}" = "RSS" ] ; then
+			xmlstarlet sel -t -m "/rss/channel/item" \
+				-v "title" -n \
+				-v "link" -n \
+				-v "description" -n \
+				-o ${SEP} -n \
+				< "${feed_file}" \
+				| xmlstarlet unesc \
+				> "${F2E_TMP_FILE}"
+		elif [ "${feed_type}" = "Atom" ] ; then
+			xmlstarlet sel -N x="http://www.w3.org/2005/Atom" \
+				-t -m "/x:feed/x:entry" \
+				-v "x:title" -n \
+				-v "x:link/@href" -n \
+				-v "x:content" -n \
+				-o ${SEP} -n \
+				< "${feed_file}" \
+				| xmlstarlet unesc \
+				> "${F2E_TMP_FILE}"
+		else
+			f2e_log "notice" "feed '${feed_uri}' is neither RSS nor Atom, ignore it"
+			feeds_nr=$(( ${feeds_nr} + 1 ))
+			continue
+		fi
+
+		# create one cache file per item/entry
+		mkdir -p "${feed_dir}/items/all"
+		mkdir -p "${feed_dir}/items/new"
+		feed_item_content=""
+		feed_item_content=""
+		feed_item_title="unknown"
+		while read feed_line ; do
+			if [ "${feed_line}" != "${SEP}" ] ; then
+				test -z "${feed_item_content}" && feed_item_title="${feed_line}"
+				feed_item_content="${feed_item_content}${feed_line}\n"
+			else
+				local feed_item_hash="$( echo -e "${feed_item_content}" | md5sum | awk '{ print $1 }' )"
+				if [ -f "${feed_dir}/items/all/${feed_item_hash}" ] ; then
+					f2e_log "info" "  * old item '${feed_item_title}'"
+				else
+					f2e_log "info" "  * new item '${feed_item_title}'"
+					# record new item in cache
+					echo -e "${feed_item_content}" > "${feed_dir}/items/all/${feed_item_hash}"
+					ln -snf "../all/${feed_item_hash}" \
+					        "${feed_dir}/items/new/${feed_item_hash}"
+				fi
+				feed_item_content=""
+			fi
+		done < "${F2E_TMP_FILE}"
+
+		feeds_nr=$(( ${feeds_nr} + 1 ))
+
+	done < "${F2E_FEEDLIST_FILE}"
+}
+
+f2e_utf8encode()
+{
+	echo -e "=?utf-8?B?$( echo -e "${1}" | base64 --wrap=0 )?="
+}
+
+f2e_send_email()
+{
+	local from_name="$1"
+	local from_email="$2"
+	local feed_uri="$3"
+	local subject="$4"
+	local body="$5"
+	local to_email="$6"
+	echo -e "${body}" | base64 | \
+		mail -s "$( f2e_utf8encode "${subject}" )" \
+		     -a "From: $( f2e_utf8encode "${from_name}" ) <${from_email}>" \
+		     -a "User-Agent: ${F2E_USER_AGENT}" \
+		     -a "Content-Type: text/plain; charset=\"utf-8\"" \
+		     -a "Content-Transfer-Encoding: base64" \
+		     -a "Content-Disposition: inline" \
+		     -a "X-RSS-Feed: ${feed_uri}" \
+		     -a "X-Rss: 1" \
+		     "${to_email}"
+	return $?
+}
+
+f2e_send_emails()
+{
+	f2e_log "info" "checking for new articles"
+	for new_feed_item in $( \ls -1 ${F2E_FEEDS_DIR}/*/items/new/* 2>/dev/null | sort ) ; do
+		feed_item_title=""
+		feed_item_link=""
+		feed_item_content=""
+		feed_dir="$( dirname "$( dirname "$( dirname "${new_feed_item}" )" )" )"
+		feed_title="$( cat "${feed_dir}/title" )"
+		feed_uri="$( cat "${feed_dir}/uri" )"
+
+		lines_num=1
+		while read feed_item_line ; do
+			if [ ${lines_num} -eq 1 ] ; then
+				feed_item_title="${feed_item_line}"
+			elif [ ${lines_num} -eq 2 ] ; then
+				feed_item_link="${feed_item_line}"
+			elif [ ${lines_num} -ge 3 ] ; then
+				feed_item_content="${feed_item_content}${feed_item_line}\n"
+			fi
+			lines_num=$(( ${lines_num} + 1 ))
+		done < "${new_feed_item}"
+
+		f2e_log "info" "  * ${feed_title}: sending new item '${feed_item_title}'"
+		f2e_send_email \
+			"${feed_title}" "${F2E_EMAIL_FROM}" \
+			"${feed_uri}" \
+			"${feed_item_title}" \
+			"URL: ${feed_item_link}\n\n$( echo -e "${feed_item_content}" | pyhtml2text --body-width=0 )\n\nURL: ${feed_item_link}" \
+			"${F2E_EMAIL_TO}"
+		ret=$?
+		if [ ${ret} -ne 0 ] ; then
+			f2e_log "err" "failed to send email to '${F2E_EMAIL_TO}' (${ret})"
+		else
+			test -h "${new_feed_item}" && rm -f "${new_feed_item}"
+		fi
+
+	done
+}
+
+
+# parse arguments
+f2e_is_quiet=0
+while true ; do
+	case "$1" in
+		-h|--help)
+			f2e_print_usage
+			exit 1
+			;;
+		-q|--quiet)
+			f2e_is_quiet=1
+			shift
+			continue
+			;;
+		-v|--version)
+			echo "${SCRIPT_NAME} version ${SCRIPT_VERSION}"
+			exit 0
+			;;
+		*)
+			break
+			;;
+	esac
+done
+if [ $# -ne 2 ] ; then
+	if [ $# -eq 0 ] ; then
+		f2e_log "err" "missing email-to argument"
+	elif [ $# -eq 1 ] ; then
+		f2e_log "err" "missing email-from argument"
+	fi
+	echo ""
+	f2e_print_usage
+	exit 1
+fi
+F2E_EMAIL_TO="$1"
+F2E_EMAIL_FROM="$2"
+
+# better have a home directory
+if [ -z "${HOME}" ] ; then
+	f2e_log "err" "user is homeless, \$HOME is empty"
+	exit 1
+fi
+if [ ! -e "${HOME}" ] ; then
+	f2e_log "err" "user is homeless, \$HOME '${HOME}' does not exist"
+	exit 1
+fi
+if [ ! -d "${HOME}" ] ; then
+	f2e_log "err" "user is homeless, \$HOME '${HOME}' is not a directory"
+	exit 1
+fi
+
+# create config and cache directories if needed
+mkdir -p "${F2E_CONFIG_DIR}"
+mkdir -p "${F2E_FEEDS_DIR}"
+
+# nothing to do if the list of feeds does not exist or is empty
+if [ ! -e "${F2E_FEEDLIST_FILE}" ] || [ ! -s "${F2E_FEEDLIST_FILE}" ] ; then
+	f2e_log "notice" "feed list is empty"
+	f2e_log "notice" "add one URI per line in '${F2E_FEEDLIST_FILE}'"
+	touch "${F2E_FEEDLIST_FILE}"
+	exit 0
+fi
+if [ ! -f "${F2E_FEEDLIST_FILE}" ] ; then
+	f2e_log "err" "feed list '${F2E_FEEDLIST_FILE}' is not a regular file"
+	exit 1
+fi
+
+# create a secure temporary file
+F2E_TMP_FILE="$( mktemp --tmpdir "feeds2email.tmp.XXXXXXXXXX" )"
+ret=$?
+if [ ${ret} -ne 0 ] ; then
+	f2e_log "err" "failed to create a temporary file: mktemp exited with code ${ret}"
+	exit 1
+fi
+
+# get contents of feeds
+f2e_get_feeds
+# send emails for new ones
+f2e_send_emails
+
+# remove the temporary file
+rm -f "${F2E_TMP_FILE}"
+
+exit 0
+
