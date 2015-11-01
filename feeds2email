@@ -26,9 +26,9 @@
 
 #
 # Name:         feeds2email
-# Description:  fetch RSS or Atom feeds and send new articles by email
+# Description:  fetch RSS, Atom or RDF feeds and send new articles by email
 # Dependencies: bash, curl, xmlstarlet, Python html2text, logger, md5sum, awk,
-#               sed, tr, mail, and mktemp.
+#               sed, tr, find, grep, mail, and mktemp.
 # Author:       Didier Barvaux <didier@barvaux.org>
 # License:      Simplified BSD License
 #
@@ -52,29 +52,58 @@ F2E_USER_AGENT="${SCRIPT_NAME}/${SCRIPT_VERSION} (${SCRIPT_URI})"
 F2E_FEEDLIST_FILE="${F2E_CONFIG_DIR}/feedlist" # one feed url per line
 F2E_FEEDS_DIR="${F2E_CACHE_DIR}/feeds"
 
-SEP="---.---"
+SEP_ITEMS="---item---"
+SEP_FIELDS="---field---"
 
 
 f2e_print_usage()
 {
 	echo "Send news feeds by email"
 	echo ""
-	echo "Fetch all RSS or Atom feeds listed in \$HOME/.config/${SCRIPT_NAME}/feedlist"
+	echo "Fetch all RSS, Atom or RDF feeds listed in \$HOME/.config/${SCRIPT_NAME}/feedlist"
 	echo "and send new articles to the given email. Feeds are recorded in the"
 	echo "\$HOME/.cache/${SCRIPT_NAME}/ cache directory."
 	echo ""
-	echo "Usage: ${SCRIPT_NAME} [options] email-to email-from"
+	echo "Usage: ${SCRIPT_NAME} [options] config"
+	echo "       ${SCRIPT_NAME} [options] config email-to   [<email>]"
+	echo "       ${SCRIPT_NAME} [options] config email-from [<email>]"
+	echo "       ${SCRIPT_NAME} [options] list"
+	echo "       ${SCRIPT_NAME} [options] status  [<feed-uri>]"
+	echo "       ${SCRIPT_NAME} [options] add     <feed-uri>"
+	echo "       ${SCRIPT_NAME} [options] del     <feed-uri>"
+	echo "       ${SCRIPT_NAME} [options] enable  <feed-uri>"
+	echo "       ${SCRIPT_NAME} [options] disable <feed-uri>"
+	echo "       ${SCRIPT_NAME} [options] update  <feed-uri>"
+	echo "       ${SCRIPT_NAME} [options] update"
+	echo ""
+	echo "Commands:"
+	echo "  config             Print the current configuration"
+	echo "  config email-to    Print/configure the name and email address of the user"
+	echo "  config email-from  Print/configure the sender email address"
+	echo "  list               List the registered feeds"
+	echo "  add                Register a new feed (and enable it)"
+	echo "  del                Unregister an existing feed"
+	echo "  status             Print the status of feeds in error or of an existing feed"
+	echo "  enable             Enable a new feed"
+	echo "  disable            Disable an existing feed"
+	echo "  update             Retrieve, parse and send new articles for all"
+	echo "                       registered feeds or the specified one"
 	echo ""
 	echo "Options:"
-	echo "  email-to       Send feeds to this email address"
-	echo "  email-from     Send feeds from this email address"
+	echo "  email          An email address"
+	echo "  feed-uri       The URI of the feed"
 	echo "  -h, --help     Print this help message"
 	echo "  -q, --quiet    Run in quiet mode"
 	echo "  -v, --version  Print software version and quit"
 	echo ""
 	echo "Examples:"
-	echo "  ${SCRIPT_NAME} --help                                                          Print software usage"
-	echo "  ${SCRIPT_NAME} --version                                                       Print software version"
+	echo "  ${SCRIPT_NAME} --help                                                       Print software usage"
+	echo "  ${SCRIPT_NAME} --version                                                    Print software version"
+	echo "  ${SCRIPT_NAME} list                                                         List registered feeds"
+	echo "  ${SCRIPT_NAME} add https://github.com/didier-barvaux/feeds2email/commits/master.atom      Register a new feed"
+	echo "  ${SCRIPT_NAME} disable https://github.com/didier-barvaux/feeds2email/commits/master.atom  Disable a feed"
+	echo "  ${SCRIPT_NAME} enable https://github.com/didier-barvaux/feeds2email/commits/master.atom   Enable a new feed"
+	echo "  ${SCRIPT_NAME} del https://github.com/didier-barvaux/feeds2email/commits/master.atom      Unregister a new feed"
 	echo "  ${SCRIPT_NAME} john.snow@example.com ${SCRIPT_NAME}@example.com                Send new articles to John Snow from a specific email address"
 	echo "  ${SCRIPT_NAME} 'John Snow <john.snow@example.com>' ${SCRIPT_NAME}@example.com  Send new articles to John Snow with his full name and from a specific email address"
 	echo "  ${SCRIPT_NAME} -q john.snow@example.com ${SCRIPT_NAME}@example.com             Run in quiet mode"
@@ -96,6 +125,330 @@ f2e_log()
 			;;
 	esac
 	logger ${do_print_stderr} -t "${SCRIPT_NAME}" -p ${F2E_LOG_FACILITY}.${log_level} "${log_msg}"
+}
+
+# compute a (probably) unique hash
+f2e_hash()
+{
+	local data="$1"
+	echo -en "${data}" | md5sum | awk '{ printf $1 }'
+	return $?
+}
+
+# strip empty lines but also spaces at the beginning and end of the given string
+f2e_trim()
+{
+	echo -en "$1" | sed -e 's/^ *//' -e 's/ *$//' | grep -vE '^$'
+	return $?
+}
+
+# pretty print the modification date of the given file
+f2e_mdate()
+{
+	local file="$1"
+	local timestamp="$( stat --format="%Y" "${file}" )"
+	date --date="@${timestamp}" | awk '{ printf $0 }'
+}
+
+# print current configuration or configure
+f2e_config()
+{
+	local config_attr="$1"
+	local config_val="$2"
+
+	if [ -z "${config_attr}" ] ; then
+
+		# print all configuration attributes
+		echo "configuration:"
+		for config_attr in email-to email-from ; do
+			echo "  ${config_attr} = $( cat "${F2E_CONFIG_DIR}/${config_attr}" 2>/dev/null )"
+		done
+
+		return 0
+
+	else
+
+		# reject unknown attributes
+		case "${config_attr}" in
+			email-to|email-from)
+				;;
+			*)
+				echo "unknown config attribute '${config_attr}'" >&2
+				return 1
+		esac
+
+		# print or configure?
+		if [ -z "${config_val}" ] ; then
+			if [ ! -f "${F2E_CONFIG_DIR}/${config_attr}" ] ; then
+				echo "attribute '${config_attr}' not configured yet" >&2
+				return 1
+			fi
+			cat "${F2E_CONFIG_DIR}/${config_attr}" ; echo
+			return $?
+		else
+			echo -n "${config_val}" > "${F2E_CONFIG_DIR}/${config_attr}"
+			return $?
+		fi
+	fi
+}
+
+# list the registered feeds
+f2e_feeds_list()
+{
+	local feeds_max_nr=$( wc -l < "${F2E_FEEDLIST_FILE}" )
+	local feeds_nr
+	local feed_info
+
+	echo "${feeds_max_nr} registered feeds:"
+	feeds_nr=1
+	while read feed_info ; do
+		local feed_title
+		local feed_uri
+		local feed_hash
+		local feed_dir
+
+		feed_uri="$( echo "${feed_info}" | sed -e 's/^#//' )"
+
+		# compute a (probably) unique hash for the feed
+		feed_hash="$( f2e_hash "${feed_uri}" )"
+		ret=$?
+		if [ ${ret} -ne 0 ] ; then
+			f2e_log "err" "failed to compute hash for feed '${feed_uri}' (${ret})"
+			feeds_nr=$(( ${feeds_nr} + 1 ))
+			continue
+		fi
+
+		# compute feed directory and title
+		feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
+		feed_title="$( cat "${feed_dir}/title" 2>/dev/null )"
+
+		printf "%3d: [" ${feeds_nr}
+		echo "${feed_info}" | grep -qE "^#"
+		if [ $? -eq 0 ] ; then
+			echo -n " "
+		else
+			echo -n "*"
+		fi
+		echo -n "] "
+		if [ -z "${feed_title}" ] ; then
+			echo -n "---"
+		else
+			echo -n "${feed_title}"
+		fi
+		echo " (${feed_uri})"
+
+		feeds_nr=$(( ${feeds_nr} + 1 ))
+
+	done < "${F2E_FEEDLIST_FILE}"
+}
+
+# register a new feed
+f2e_feed_add()
+{
+	local feed_uri="$1"
+
+	grep -q "^${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	if [ $? -eq 0 ] ; then
+		echo "cannot add feed '${feed_uri}', feed is already registered" >&2
+		return 1
+	fi
+
+	grep -q "^#${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	if [ $? -eq 0 ] ; then
+		echo "cannot add feed '${feed_uri}', feed is already registered, but disabled" >&2
+		return 1
+	fi
+
+	echo "${feed_uri}" >> "${F2E_FEEDLIST_FILE}"
+	ret=$?
+	if [ ${ret} -ne 0 ] ; then
+		echo "cannot add feed '${feed_uri}' (${ret})"
+		return ${ret}
+	fi
+	echo "feed '${feed_uri}' added"
+
+	return ${ret}
+}
+
+# delete an existing feed
+f2e_feed_del()
+{
+	local feed_uri="$1"
+
+	grep -q "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	if [ $? -ne 0 ] ; then
+		echo "cannot remove feed '${feed_uri}', feed is not registered" >&2
+		return 1
+	fi
+
+	grep -v "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}" > "${F2E_TMP_FILE}"
+	ret=$?
+	if [ ${ret} -eq 0 ] ; then
+		mv -f "${F2E_TMP_FILE}" "${F2E_FEEDLIST_FILE}"
+		ret=$?
+	fi
+	if [ ${ret} -ne 0 ] ; then
+		echo "cannot delete feed '${feed_uri}' (${ret})"
+		return ${ret}
+	fi
+	echo "feed '${feed_uri}' deleted"
+
+	return ${ret}
+}
+
+# print the status of all feeds in error or of an existing feed
+f2e_feed_print_status()
+{
+	local feed_uri="$1"
+	local feed_status
+	local feed_hash
+	local feed_dir
+	local feed_title
+
+	if [ -z "${feed_uri}" ] ; then
+
+		# print the status of all feeds in error for quick diagnostic
+
+		local not_retrieved=""
+		local stderr_list=""
+		local stderr_file
+		local http_ok_list=""
+		local http_file
+
+		# feeds not yet retrieved are suspicious
+		not_retrieved="$( grep -vE "^#" "${F2E_FEEDLIST_FILE}" )"
+
+		# feeds for which curl output something on stderr are suspicious
+		for stderr_file in $( find "${F2E_FEEDS_DIR}" -name feed.xml.stderr -and -not -size 0c ) ; do
+			stderr_list="${stderr_list}$( cat "$( dirname "${stderr_file}" )/uri" )\n"
+		done
+
+		# feeds with HTTP status codes different than 200 or 304 are suspicious
+		for http_file in $( find "${F2E_FEEDS_DIR}" -name feed.xml.headers ) ; do
+			local http_code="$( head -n 1 "${http_file}" | awk '{ printf $2 }' )"
+			case "${http_code}" in
+				200|304)
+					;;
+				*)
+					http_ok_list="${http_ok_list}$( cat "$( dirname "${feed_dir}" )/uri" )\n"
+					;;
+			esac
+		done
+
+		local feed_uris="$( echo -e "${not_retrieved}${stderr_list}${http_ok_list}" | sort | uniq )"
+		local feeds_nr=1
+		for feed_uri in $( echo -e "${feed_uris}" ) ; do
+			printf "%3d: " ${feeds_nr}
+			echo "${feed_uri}:"
+			echo -e "${not_retrieved}" | grep -q "^${feed_uri}$" && \
+				echo "     * not retrieved yet"
+			echo -e "${stderr_list}" | grep -q "^${feed_uri}$" && \
+				echo "     * download issued errors: $( cat ${F2E_FEEDS_DIR}/$( f2e_hash "${feed_uri}" )/feed.xml.stderr )"
+			echo -e "${http_ok_list}" | grep -q "^${feed_uri}$" && \
+				echo "     * download issued HTTP code $( head -n 1 ${F2E_FEEDS_DIR}/$( f2e_hash "${feed_uri}" )/feed.xml.headers | awk '{ printf $2 }' )"
+			feeds_nr=$(( ${feeds_nr} + 1 ))
+		done
+
+	else
+
+		# print the status of an existing feed
+		grep -q "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+		if [ $? -ne 0 ] ; then
+			echo "cannot enable feed '${feed_uri}', feed is not registered" >&2
+			return 1
+		fi
+
+		grep -q "^${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+		if [ $? -eq 0 ] ; then
+			feed_status="enabled"
+		else
+			feed_status="disabled"
+		fi
+
+		feed_hash="$( f2e_hash "${feed_uri}" )"
+		feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
+
+		echo "feed '${feed_uri}':"
+
+		if [ ! -d "${feed_dir}" ] || [ ! -f "${feed_dir}/title" ] ; then
+			echo "  status: ${feed_status} / not retrieved yet"
+		else
+			feed_title="$( cat "${feed_dir}/title" )"
+			articles_nr="$( \ls -1 ${feed_dir}/items/all/* 2>/dev/null | wc -l )"
+			new_articles_nr="$( \ls -1 ${feed_dir}/items/new/* 2>/dev/null | wc -l )"
+			echo "  status.......... ${feed_status} / retrieved"
+			echo "  title........... ${feed_title}"
+			echo "  articles........ ${articles_nr} (with ${new_articles_nr} new)"
+			echo "  last fetch...... $( f2e_mdate "${feed_dir}/feed.xml.headers" )"
+			echo "  last change..... $( f2e_mdate "${feed_dir}/feed.xml" )"
+			echo "  hash............ ${feed_hash}"
+			echo "  directory....... ${feed_dir}"
+			echo "  HTTP status..... $( head -n 1 "${feed_dir}/feed.xml.headers" )"
+			[ -f "${feed_dir}/feed.xml.last_modified" ] && \
+			echo "  Last-Modified... $( cat "${feed_dir}/feed.xml.last_modified" )"
+			[ -f "${feed_dir}/feed.xml.etag" ] && \
+			echo "  ETag............ $( cat "${feed_dir}/feed.xml.etag" )"
+		fi
+
+	fi
+
+	return 0
+}
+
+# enable an existing feed
+f2e_feed_enable()
+{
+	local feed_uri="$1"
+
+	grep -q "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	if [ $? -ne 0 ] ; then
+		echo "cannot enable feed '${feed_uri}', feed is not registered" >&2
+		return 1
+	fi
+
+	grep -q "^#${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	if [ $? -ne 0 ] ; then
+		echo "cannot enable feed '${feed_uri}', feed is already enabled" >&2
+		return 1
+	fi
+
+	sed -i -e "s|^#${feed_uri}$|${feed_uri}|" "${F2E_FEEDLIST_FILE}"
+	ret=$?
+	if [ ${ret} -ne 0 ] ; then
+		echo "cannot enable feed '${feed_uri}' (${ret})"
+		return ${ret}
+	fi
+	echo "feed '${feed_uri}' enabled"
+
+	return ${ret}
+}
+
+# disable an existing feed
+f2e_feed_disable()
+{
+	local feed_uri="$1"
+
+	grep -q "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	if [ $? -ne 0 ] ; then
+		echo "cannot disable feed '${feed_uri}', feed is not registered" >&2
+		return 1
+	fi
+
+	grep -q "^${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	if [ $? -ne 0 ] ; then
+		echo "cannot disable feed '${feed_uri}', feed is already disabled" >&2
+		return 1
+	fi
+
+	sed -i -e "s|^${feed_uri}$|\#${feed_uri}|" "${F2E_FEEDLIST_FILE}"
+	ret=$?
+	if [ ${ret} -ne 0 ] ; then
+		echo "cannot disable feed '${feed_uri}' (${ret})"
+		return ${ret}
+	fi
+	echo "feed '${feed_uri}' disabled"
+
+	return ${ret}
 }
 
 f2e_feed_download()
@@ -161,122 +514,220 @@ f2e_feed_download()
 	return ${ret}
 }
 
+# get one single feed
+f2e_get_one_feed()
+{
+	local feeds_max_nr=$1
+	local feeds_nr=$2
+	local feed_info="$3"
+
+	local feed_uri
+	local feed_type="unknown"
+	local feed_title
+	local feed_hash
+	local feed_dir
+	local feed_file
+	local feed_line
+	local feed_item_content
+	local feed_item_title
+
+	feed_uri="$( echo "${feed_info}" | sed -e 's/^#//' )"
+
+	# skip feed if disabled
+	echo "${feed_info}" | grep -qE "^#"
+	if [ $? -eq 0 ] ; then
+		f2e_log "info" "* [${feeds_nr}/${feeds_max_nr}] ${feed_uri} [skip]"
+		return 1
+	fi
+
+	f2e_log "info" "* [${feeds_nr}/${feeds_max_nr}] ${feed_uri}"
+
+	# compute a (probably) unique hash for the feed
+	feed_hash="$( f2e_hash "${feed_uri}" )"
+	ret=$?
+	if [ ${ret} -ne 0 ] ; then
+		f2e_log "err" "failed to compute hash for feed '${feed_uri}' (${ret})"
+		return 1
+	fi
+	feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
+
+	mkdir -p "${feed_dir}"
+	echo "${feed_uri}" > "${feed_dir}/uri"
+
+	# download the feed content
+	feed_file="${feed_dir}/feed.xml"
+	f2e_feed_download "${feed_uri}" "${feed_file}"
+	ret=$?
+	if [ ${ret} -ne 0 ] ; then
+		f2e_log "notice" "failed to download feed '${feed_uri}' (${ret})"
+		return 1
+	fi
+
+	# detect feed type among RSS, Atom and RDF
+	# try RSS first...
+	feed_title="$( xmlstarlet sel -t -m "/rss/channel" -v "title" < "${feed_file}" )"
+	if [ $? -eq 0 ] && [ -n "${feed_title}" ] ; then
+		# RSS with encoded content or not?
+		local tmp="$( xmlstarlet sel \
+		              -N content="http://purl.org/rss/1.0/modules/content/" \
+		              -t -m "/rss/channel/item" -v "content:encoded" \
+		              < "${feed_file}" )"
+		if [ $? -eq 0 ] && [ -n "${tmp}" ] ; then
+			feed_type="RSS encoded"
+		else
+			feed_type="RSS"
+		fi
+		unset tmp
+	else
+		# maybe Atom?
+		feed_title="$( xmlstarlet sel -N x="http://www.w3.org/2005/Atom" \
+		               -t -m "/x:feed" -v "x:title" < "${feed_file}" )"
+		if [ $? -eq 0 ] ; then
+			feed_type="Atom"
+		else
+			# maybe RDF?
+			feed_title="$( xmlstarlet sel \
+			               -N x="http://purl.org/rss/1.0/" \
+			               -N rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" \
+			               -t -m "/rdf:RDF/x:channel" -v "x:title" < "${feed_file}" )"
+			if [ $? -eq 0 ] ; then
+				feed_type="RDF"
+			fi
+		fi
+	fi
+
+	# write title in the cache for later use
+	echo "${feed_title}" > "${feed_dir}/title"
+	# print it on console for info
+	f2e_log "info" "  ${feed_title} [${feed_type}]"
+
+	# parse feed items/entries
+	if [ "${feed_type}" = "RSS" ] ; then
+		xmlstarlet sel \
+			-t -m "/rss/channel/item" \
+			-v "title" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "link" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "description" -n \
+			-o ${SEP_ITEMS} -n \
+			< "${feed_file}" \
+			| xmlstarlet unesc \
+			> "${F2E_TMP_FILE}"
+	elif [ "${feed_type}" = "RSS encoded" ] ; then
+		xmlstarlet sel \
+		   -N content="http://purl.org/rss/1.0/modules/content/" \
+			-t -m "/rss/channel/item" \
+			-v "title" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "link" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "content:encoded" -n \
+			-o ${SEP_ITEMS} -n \
+			< "${feed_file}" \
+			| xmlstarlet unesc \
+			> "${F2E_TMP_FILE}"
+	elif [ "${feed_type}" = "Atom" ] ; then
+		xmlstarlet sel \
+			-N x="http://www.w3.org/2005/Atom" \
+			-t -m "/x:feed/x:entry" \
+			-v "x:title" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "x:link/@href" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "x:content" -n \
+			-o ${SEP_ITEMS} -n \
+			< "${feed_file}" \
+			| xmlstarlet unesc \
+			> "${F2E_TMP_FILE}"
+	elif [ "${feed_type}" = "RDF" ] ; then
+		xmlstarlet sel \
+			-N x="http://purl.org/rss/1.0/" \
+			-N rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" \
+			-t -m "/rdf:RDF/x:item" \
+			-v "x:title" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "x:link" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "x:description" -n \
+			-o ${SEP_ITEMS} -n \
+			< "${feed_file}" \
+			| xmlstarlet unesc \
+			> "${F2E_TMP_FILE}"
+	else
+		f2e_log "notice" "feed '${feed_uri}' is neither RSS, Atom nor RDF, ignore it"
+		feeds_nr=$(( ${feeds_nr} + 1 ))
+		continue
+	fi
+
+	# create one cache file per item/entry
+	mkdir -p "${feed_dir}/items/all"
+	mkdir -p "${feed_dir}/items/new"
+	feed_item_content=""
+	feed_item_title=""
+	while read feed_line ; do
+		if [ "${feed_line}" != "${SEP_ITEMS}" ] ; then
+			[ -z "${feed_item_title}" ] && feed_item_title="${feed_line}"
+			feed_item_content="${feed_item_content}${feed_line}\n"
+		else
+			local feed_item_hash="$( f2e_hash "${feed_item_content}" )"
+			if [ -f "${feed_dir}/items/all/${feed_item_hash}" ] ; then
+				f2e_log "info" "  * old item '${feed_item_title}'"
+			else
+				f2e_log "info" "  * new item '${feed_item_title}'"
+				# record new item in cache
+				echo -e "${feed_item_content}" > "${feed_dir}/items/all/${feed_item_hash}"
+				ln -snf "../all/${feed_item_hash}" \
+				        "${feed_dir}/items/new/${feed_item_hash}"
+			fi
+			feed_item_title=""
+			feed_item_content=""
+		fi
+	done < "${F2E_TMP_FILE}"
+
+	return 0
+}
+
 f2e_get_feeds()
 {
-	local feeds_max_nr=$( wc -l < "${F2E_FEEDLIST_FILE}" )
-	local feeds_nr
-	local feed_uri
+	local scope="$1"
+	local status=0
 
-	f2e_log "info" "downloading feeds"
-	feeds_nr=1
-	while read feed_uri ; do
-		local feed_type="unknown"
-		local feed_title
-		local feed_hash
-		local feed_dir
-		local feed_file
-		local feed_line
-		local feed_item_content
-		local feed_item_title
+	if [ -z "${scope}" ] ; then
 
-		f2e_log "info" "* [${feeds_nr}/${feeds_max_nr}] ${feed_uri}"
+		local feeds_max_nr=$( wc -l < "${F2E_FEEDLIST_FILE}" )
+		local feeds_nr
+		local feed_info
 
-		# compute a (probably) unique hash for the feed
-		feed_hash="$( echo "${feed_uri}" | md5sum | awk '{ print $1 }' )"
-		ret=$?
-		if [ ${ret} -ne 0 ] ; then
-			f2e_log "err" "failed to compute hash for feed '${feed_uri}' (${ret})"
+		f2e_log "info" "downloading all ${feeds_max_nr} feeds:"
+		feeds_nr=1
+		while read feed_info ; do
+			f2e_get_one_feed ${feeds_max_nr} ${feeds_nr} "${feed_info}"
+			status=$(( ${status} + $? ))
 			feeds_nr=$(( ${feeds_nr} + 1 ))
-			continue
-		fi
-		feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
+		done < "${F2E_FEEDLIST_FILE}"
 
-		mkdir -p "${feed_dir}"
-		echo "${feed_uri}" > "${feed_dir}/uri"
+	else
 
-		# download the feed content
-		feed_file="${feed_dir}/feed.xml"
-		f2e_feed_download "${feed_uri}" "${feed_file}"
-		ret=$?
-		if [ ${ret} -ne 0 ] ; then
-			f2e_log "notice" "failed to download feed '${feed_uri}' (${ret})"
-			feeds_nr=$(( ${feeds_nr} + 1 ))
-			continue
+		grep -q "^#\?${scope}$" "${F2E_FEEDLIST_FILE}"
+		if [ $? -ne 0 ] ; then
+			echo "cannot update feed '${scope}', feed is not registered" >&2
+			return 1
 		fi
 
-		# detect feed type:
-		# try RSS first...
-		feed_title="$( xmlstarlet sel -t -m "/rss/channel" -v "title" < "${feed_file}" )"
+		grep -q "^#${scope}$" "${F2E_FEEDLIST_FILE}"
 		if [ $? -eq 0 ] ; then
-			feed_type="RSS"
-		else
-			# maybe Atom?
-			feed_title="$( xmlstarlet sel -N x="http://www.w3.org/2005/Atom" \
-			               -t -m "/x:feed" -v "x:title" < "${feed_file}" )"
-			if [ $? -eq 0 ] ; then
-				feed_type="Atom"
-			fi
+			echo "cannot update feed '${scope}', feed is disabled" >&2
+			return 1
 		fi
 
-		# write title in the cache for later use
-		echo "${feed_title}" > "${feed_dir}/title"
-		# print it on console for info
-		f2e_log "info" "  ${feed_title} [${feed_type}]"
+		f2e_log "info" "downloading feed '${scope}':"
+		f2e_get_one_feed 1 1 "${scope}"
+		status=$(( ${status} + $? ))
 
-		# parse feed items/entries
-		if [ "${feed_type}" = "RSS" ] ; then
-			xmlstarlet sel -t -m "/rss/channel/item" \
-				-v "title" -n \
-				-v "link" -n \
-				-v "description" -n \
-				-o ${SEP} -n \
-				< "${feed_file}" \
-				| xmlstarlet unesc \
-				> "${F2E_TMP_FILE}"
-		elif [ "${feed_type}" = "Atom" ] ; then
-			xmlstarlet sel -N x="http://www.w3.org/2005/Atom" \
-				-t -m "/x:feed/x:entry" \
-				-v "x:title" -n \
-				-v "x:link/@href" -n \
-				-v "x:content" -n \
-				-o ${SEP} -n \
-				< "${feed_file}" \
-				| xmlstarlet unesc \
-				> "${F2E_TMP_FILE}"
-		else
-			f2e_log "notice" "feed '${feed_uri}' is neither RSS nor Atom, ignore it"
-			feeds_nr=$(( ${feeds_nr} + 1 ))
-			continue
-		fi
+	fi
 
-		# create one cache file per item/entry
-		mkdir -p "${feed_dir}/items/all"
-		mkdir -p "${feed_dir}/items/new"
-		feed_item_content=""
-		feed_item_content=""
-		feed_item_title="unknown"
-		while read feed_line ; do
-			if [ "${feed_line}" != "${SEP}" ] ; then
-				test -z "${feed_item_content}" && feed_item_title="${feed_line}"
-				feed_item_content="${feed_item_content}${feed_line}\n"
-			else
-				local feed_item_hash="$( echo -e "${feed_item_content}" | md5sum | awk '{ print $1 }' )"
-				if [ -f "${feed_dir}/items/all/${feed_item_hash}" ] ; then
-					f2e_log "info" "  * old item '${feed_item_title}'"
-				else
-					f2e_log "info" "  * new item '${feed_item_title}'"
-					# record new item in cache
-					echo -e "${feed_item_content}" > "${feed_dir}/items/all/${feed_item_hash}"
-					ln -snf "../all/${feed_item_hash}" \
-					        "${feed_dir}/items/new/${feed_item_hash}"
-				fi
-				feed_item_content=""
-			fi
-		done < "${F2E_TMP_FILE}"
-
-		feeds_nr=$(( ${feeds_nr} + 1 ))
-
-	done < "${F2E_FEEDLIST_FILE}"
+	return ${status}
 }
 
 f2e_utf8encode()
@@ -289,6 +740,7 @@ f2e_send_email()
 	local from_name="$1"
 	local from_email="$2"
 	local feed_uri="$3"
+	local feed_hash="$( f2e_hash "${feed_uri}" )"
 	local subject="$4"
 	local body="$5"
 	local to_email="$6"
@@ -300,6 +752,7 @@ f2e_send_email()
 		     -a "Content-Transfer-Encoding: base64" \
 		     -a "Content-Disposition: inline" \
 		     -a "X-RSS-Feed: ${feed_uri}" \
+		     -a "X-RSS-Feed-Hash: ${feed_hash}" \
 		     -a "X-Rss: 1" \
 		     "${to_email}"
 	return $?
@@ -307,33 +760,62 @@ f2e_send_email()
 
 f2e_send_emails()
 {
-	f2e_log "info" "checking for new articles"
-	for new_feed_item in $( \ls -1 ${F2E_FEEDS_DIR}/*/items/new/* 2>/dev/null | sort ) ; do
-		feed_item_title=""
-		feed_item_link=""
-		feed_item_content=""
-		feed_dir="$( dirname "$( dirname "$( dirname "${new_feed_item}" )" )" )"
-		feed_title="$( cat "${feed_dir}/title" )"
-		feed_uri="$( cat "${feed_dir}/uri" )"
+	local scope="$1"
+	local new_feed_items
+	local new_feed_item
+	local status=0
 
-		lines_num=1
+	f2e_log "info" "checking for new articles"
+	new_feed_items="$( \ls -1 ${F2E_FEEDS_DIR}/*/items/new/* 2>/dev/null | sort )"
+	for new_feed_item in $( echo -e "${new_feed_items}" ) ; do
+		local feed_dir="$( dirname "$( dirname "$( dirname "${new_feed_item}" )" )" )"
+		local feed_title="$( cat "${feed_dir}/title" )"
+		local feed_uri="$( cat "${feed_dir}/uri" )"
+		local feed_item_title=""
+		local feed_item_link=""
+		local feed_item_content=""
+		local parser_state=""
+
+		if [ -n "${scope}" ] && [ "${scope}" != "${feed_uri}" ] ; then
+			continue
+		fi
+
+		parser_state="in_title"
 		while read feed_item_line ; do
-			if [ ${lines_num} -eq 1 ] ; then
-				feed_item_title="${feed_item_line}"
-			elif [ ${lines_num} -eq 2 ] ; then
-				feed_item_link="${feed_item_line}"
-			elif [ ${lines_num} -ge 3 ] ; then
-				feed_item_content="${feed_item_content}${feed_item_line}\n"
-			fi
-			lines_num=$(( ${lines_num} + 1 ))
+			case "${parser_state}" in
+				in_title)
+					if [ "${feed_item_line}" != "${SEP_FIELDS}" ] ; then
+						feed_item_title="${feed_item_title}${feed_item_line}\n"
+					else
+						parser_state="in_link"
+					fi
+					;;
+				in_link)
+					if [ "${feed_item_line}" != "${SEP_FIELDS}" ] ; then
+						feed_item_link="${feed_item_link}${feed_item_line}\n"
+					else
+						parser_state="in_content"
+					fi
+					;;
+				in_content)
+					feed_item_content="${feed_item_content}${feed_item_line}\n"
+					;;
+				*)
+					f2e_log "err" "unknown parser state '${parser_state}'"
+					exit 1
+			esac
 		done < "${new_feed_item}"
+
+		# normalize title and link
+		feed_item_title="$( f2e_trim "${feed_item_title}" )"
+		feed_item_link="$( f2e_trim "${feed_item_link}" )"
 
 		f2e_log "info" "  * ${feed_title}: sending new item '${feed_item_title}'"
 		f2e_send_email \
 			"${feed_title}" "${F2E_EMAIL_FROM}" \
 			"${feed_uri}" \
 			"${feed_item_title}" \
-			"URL: ${feed_item_link}\n\n$( echo -e "${feed_item_content}" | pyhtml2text --body-width=0 )\n\nURL: ${feed_item_link}" \
+			"URL: ${feed_item_link}\n\n$( echo -e "${feed_item_content}" | pyhtml2text --body-width=100 )\n\nURL: ${feed_item_link}" \
 			"${F2E_EMAIL_TO}"
 		ret=$?
 		if [ ${ret} -ne 0 ] ; then
@@ -341,8 +823,11 @@ f2e_send_emails()
 		else
 			test -h "${new_feed_item}" && rm -f "${new_feed_item}"
 		fi
+		status=$(( ${status} + ${ret} ))
 
 	done
+
+	return ${status}
 }
 
 
@@ -368,18 +853,62 @@ while true ; do
 			;;
 	esac
 done
-if [ $# -ne 2 ] ; then
-	if [ $# -eq 0 ] ; then
-		f2e_log "err" "missing email-to argument"
-	elif [ $# -eq 1 ] ; then
-		f2e_log "err" "missing email-from argument"
-	fi
-	echo ""
+f2e_cmd="$1"
+shift
+expected_args_min_nr=0
+expected_args_max_nr=0
+case "${f2e_cmd}" in
+	list)
+		expected_args_min_nr=0
+		expected_args_max_nr=0
+		;;
+	add|del|enable|disable)
+		expected_args_min_nr=1
+		expected_args_max_nr=1
+		;;
+	status)
+		expected_args_min_nr=0
+		expected_args_max_nr=1
+		;;
+	config)
+		expected_args_min_nr=0
+		expected_args_max_nr=2
+		;;
+	update)
+		expected_args_min_nr=0
+		expected_args_max_nr=1
+		;;
+	*)
+		f2e_log "err" "unknown command '${f2e_cmd}'"
+		echo "" >&2
+		f2e_print_usage
+		exit 1
+		;;
+esac
+if [ $# -lt ${expected_args_min_nr} ] ; then
+	f2e_log "err" "command '${f2e_cmd}' expects at least ${expected_args_min_nr} arguments, $# given"
+	echo "" >&2
 	f2e_print_usage
 	exit 1
 fi
-F2E_EMAIL_TO="$1"
-F2E_EMAIL_FROM="$2"
+if [ $# -gt ${expected_args_max_nr} ] ; then
+	f2e_log "err" "command '${f2e_cmd}' expects at max ${expected_args_max_nr} arguments, $# given"
+	echo "" >&2
+	f2e_print_usage
+	exit 1
+fi
+case "${f2e_cmd}" in
+	config)
+		f2e_config_attr="$1"
+		f2e_config_val="$2"
+		;;
+	add|del|status|enable|disable)
+		f2e_feed_uri="$1"
+		;;
+	update)
+		f2e_update_scope="$1"
+		;;
+esac
 
 # better have a home directory
 if [ -z "${HOME}" ] ; then
@@ -410,6 +939,8 @@ if [ ! -f "${F2E_FEEDLIST_FILE}" ] ; then
 	f2e_log "err" "feed list '${F2E_FEEDLIST_FILE}' is not a regular file"
 	exit 1
 fi
+F2E_EMAIL_FROM="$( cat "${F2E_CONFIG_DIR}/email-from" 2>/dev/null )"
+F2E_EMAIL_TO="$( cat "${F2E_CONFIG_DIR}/email-to" 2>/dev/null )"
 
 # create a secure temporary file
 F2E_TMP_FILE="$( mktemp --tmpdir "feeds2email.tmp.XXXXXXXXXX" )"
@@ -419,13 +950,71 @@ if [ ${ret} -ne 0 ] ; then
 	exit 1
 fi
 
-# get contents of feeds
-f2e_get_feeds
-# send emails for new ones
-f2e_send_emails
+# perform required action
+case "${f2e_cmd}" in
+	config)
+		# print current configuration or configure
+		f2e_config "${f2e_config_attr}" "${f2e_config_val}"
+		status=$?
+		;;
+	list)
+		# list the registered feeds
+		f2e_feeds_list
+		status=$?
+		;;
+	add)
+		# register a new feed
+		f2e_feed_add "${f2e_feed_uri}"
+		status=$?
+		;;
+	del)
+		# delete an existing feed
+		f2e_feed_del "${f2e_feed_uri}"
+		status=$?
+		;;
+	status)
+		# print the status of all feeds in error or of an existing feed
+		f2e_feed_print_status "${f2e_feed_uri}"
+		status=$?
+		;;
+	enable)
+		# enable an existing feed
+		f2e_feed_enable "${f2e_feed_uri}"
+		status=$?
+		;;
+	disable)
+		# disable an existing feed
+		f2e_feed_disable "${f2e_feed_uri}"
+		status=$?
+		;;
+	update)
+		if [ -z "${F2E_EMAIL_FROM}" ] ; then
+			echo "invalid configuration: sender email address not defined" >&2
+			echo "" >&2
+			echo "fix the problem with:" >&2
+			echo "  ${SCRIPT_NAME} config email-from <email>" >&2
+			echo "" >&2
+			status=1
+		elif [ -z "${F2E_EMAIL_TO}" ] ; then
+			echo "invalid configuration: user name and email address not defined" >&2
+			echo "" >&2
+			echo "fix the problem with:" >&2
+			echo "  ${SCRIPT_NAME} config email-to 'Name <email>'" >&2
+			echo "" >&2
+			status=1
+		else
+			# get contents of feeds
+			f2e_get_feeds "${f2e_update_scope}"
+			status=$?
+			# send emails for new ones
+			f2e_send_emails "${f2e_update_scope}"
+			status=$(( ${status} + $? ))
+		fi
+		;;
+esac
 
 # remove the temporary file
 rm -f "${F2E_TMP_FILE}"
 
-exit 0
+exit ${status}
 

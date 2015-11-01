@@ -27,7 +27,9 @@ PACKAGE_NAME = feeds2email
 HELP2MAN = help2man
 
 DESTDIR =
-BINDIR = /usr/local/bin
+PREFIX = /usr/local
+BINDIR = $(PREFIX)/bin
+MANDIR = $(PREFIX)/share/man
 
 all: $(PACKAGE_NAME).1
 
@@ -37,10 +39,13 @@ $(PACKAGE_NAME).1: $(PACKAGE_NAME)
 		-n "$(PACKAGE_NAME)" \
 		./$(PACKAGE_NAME)
 
-install:
+install: $(PACKAGE_NAME) $(PACKAGE_NAME).1
 	install -d -m 755 $(DESTDIR)$(BINDIR)
 	install -m 755 $(PACKAGE_NAME) $(DESTDIR)$(BINDIR)
+	install -d -m 755 $(DESTDIR)$(MANDIR)/man1
+	install -m 644 $(PACKAGE_NAME).1 $(DESTDIR)$(MANDIR)/man1
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/$(PACKAGE_NAME)
+	$(RM) $(DESTDIR)$(MANDIR)/man1/$(PACKAGE_NAME).1
 
