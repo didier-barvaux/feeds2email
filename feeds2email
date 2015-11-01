@@ -1148,12 +1148,9 @@ fi
 mkdir -p "${F2E_CONFIG_DIR}"
 mkdir -p "${F2E_FEEDS_DIR}"
 
-# nothing to do if the list of feeds does not exist or is empty
-if [ ! -e "${F2E_FEEDLIST_FILE}" ] || [ ! -s "${F2E_FEEDLIST_FILE}" ] ; then
-	f2e_log "notice" "feed list is empty"
-	f2e_log "notice" "add one URI per line in '${F2E_FEEDLIST_FILE}'"
+# create the list of feeds if it does not exist
+if [ ! -e "${F2E_FEEDLIST_FILE}" ] ; then
 	touch "${F2E_FEEDLIST_FILE}"
-	exit 0
 fi
 if [ ! -f "${F2E_FEEDLIST_FILE}" ] ; then
 	f2e_log "err" "feed list '${F2E_FEEDLIST_FILE}' is not a regular file"
