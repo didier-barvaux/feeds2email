@@ -50,7 +50,9 @@ F2E_NETWORK_MAX_FILE_SIZE=$(( 1 * 1024 * 1024 )) # 1 MByte
 F2E_USER_AGENT="${SCRIPT_NAME}/${SCRIPT_VERSION} (${SCRIPT_URI})"
 
 F2E_FEEDLIST_FILE="${F2E_CONFIG_DIR}/feedlist" # one feed url per line
-F2E_FEEDS_DIR="${F2E_CACHE_DIR}/feeds"
+F2E_FEEDS_DIR="${F2E_CACHE_DIR}/feeds/"
+
+F2E_STATS_DIR="${F2E_CACHE_DIR}/stats/"
 
 SEP_ITEMS="---item---"
 SEP_FIELDS="---field---"
@@ -409,12 +411,30 @@ f2e_feed_print_status()
 
 		# print the status of all feeds in error for quick diagnostic
 
+		local total_fetches_nr=0
+		local http_code_file
 		local not_retrieved=""
 		local not_retrieved_info
 		local stderr_list=""
 		local stderr_file
 		local http_ok_list=""
 		local http_file
+
+		# print some stats
+		echo "statistics:"
+		echo "* feeds:"
+		echo "   * $( wc -l < "${F2E_FEEDLIST_FILE}" ) registered"
+		echo "   * $( grep -v '^#' "${F2E_FEEDLIST_FILE}" | wc -l ) enabled"
+		echo "   * $( grep '^#' "${F2E_FEEDLIST_FILE}" | wc -l ) disabled"
+		echo "* HTTP codes:"
+		for http_code_file in $( \ls -1 "${F2E_STATS_DIR}"/http_code_* ) ; do
+			local http_code="$( echo "${http_code_file}" | sed -e 's/^.*_\([0-9]\+\)$/\1/' )"
+			local http_code_nr="$( cat "${http_code_file}" )"
+			echo "   * code ${http_code} was received ${http_code_nr} times"
+			total_fetches_nr=$(( ${total_fetches_nr} + ${http_code_nr} ))
+		done
+		echo "* ${total_fetches_nr} HTTP fetches in total"
+		echo
 
 		# feeds not yet retrieved are suspicious
 		while read not_retrieved_info ; do
@@ -449,6 +469,7 @@ f2e_feed_print_status()
 
 		local feed_uris="$( echo -e "${not_retrieved}${stderr_list}${http_ok_list}" | sort | uniq )"
 		local feeds_nr=1
+		[ -n "${feed_uris}" ] && echo "suspicious feeds:"
 		for feed_uri in $( echo -e "${feed_uris}" ) ; do
 			local feed_hash="$( f2e_hash "${feed_uri}" )"
 			local feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
@@ -462,6 +483,7 @@ f2e_feed_print_status()
 				echo "     * download issued HTTP code $( f2e_get_feed_http_status_code "${feed_dir}/feed.xml.headers}" )"
 			feeds_nr=$(( ${feeds_nr} + 1 ))
 		done
+		[ -n "${feed_uris}" ] && echo
 
 	else
 
@@ -666,6 +688,13 @@ f2e_feed_download()
 	# curl returns 0 even if the feed wasn't retrieved successfully (for example
 	# 403 Forbidden code), so retrieve the exact HTTP status code
 	local http_code="$( f2e_get_feed_http_status_code "${feed_output_file}.headers" )"
+	echo "${http_code}" | grep -q '^[0-9]\{3\}$'
+	if [ $? -ne 0 ] ; then
+		f2e_log "notice" "failed to download feed '${feed_uri}': malformed HTTP status code"
+		return 1
+	fi
+	echo -n $(( $( cat "${F2E_STATS_DIR}/http_code_${http_code}" ) + 1 )) \
+		> "${F2E_STATS_DIR}/http_code_${http_code}"
 	case "${http_code}" in
 		200)
 			# OK, continue
@@ -1153,6 +1182,7 @@ fi
 # create config and cache directories if needed
 mkdir -p "${F2E_CONFIG_DIR}"
 mkdir -p "${F2E_FEEDS_DIR}"
+mkdir -p "${F2E_STATS_DIR}"
 
 # create the list of feeds if it does not exist
 if [ ! -e "${F2E_FEEDLIST_FILE}" ] ; then
