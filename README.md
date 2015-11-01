@@ -11,7 +11,8 @@ Build the man page as normal user: `make all`
 Then install as root: `make install`
 
 It requires `help2man`, `bash`, `curl`, `xmlstarlet`, `Python html2text`,
-`logger`, `md5sum`, `awk`, `sed`, `tr`, `find`, `grep`, `mail`, and `mktemp`.
+`logger`, `md5sum`, `awk`, `sed`, `tr`, `find`, `grep`, `mail`, `base64`,
+and `mktemp`.
 
 ## Uninstall
 Just run `make uninstall`.
@@ -105,6 +106,17 @@ Now, tell feeds2email to fake the HTTP User Agent for the problematic feed:
   `feeds2email add https://github.com/didier-barvaux/feeds2email/commits/master.atom fake-user-agent`
 
 Finally, try again to update the feed:
+  `feeds2email update https://github.com/didier-barvaux/feeds2email/commits/master.atom`
+
+### Authentication using cookies
+Some feeds might be protected by some authentication mechanism based on HTTP
+cookies. Here is how to workaround the problem.
+
+Tell feeds2email to use some cookies for the problematic feed:
+  `feeds2email del https://github.com/didier-barvaux/feeds2email/commits/master.atom`
+  `feeds2email add https://github.com/didier-barvaux/feeds2email/commits/master.atom cookie=$( echo "var1=val1; var2=val2; var3=val3" | base64 --wrap=0 )`
+
+Then, try again to update the feed:
   `feeds2email update https://github.com/didier-barvaux/feeds2email/commits/master.atom`
 
 ## Thanks
