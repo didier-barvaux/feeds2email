@@ -888,6 +888,7 @@ f2e_get_one_feed()
 			-v "x:link/@href" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:content" -n \
+			-v "x:summary" -n \
 			-o ${SEP_ITEMS} -n \
 			< "${feed_file}" \
 			| xmlstarlet unesc \
