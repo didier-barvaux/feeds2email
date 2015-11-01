@@ -378,13 +378,25 @@ f2e_feed_print_status()
 		# print the status of all feeds in error for quick diagnostic
 
 		local not_retrieved=""
+		local not_retrieved_info
 		local stderr_list=""
 		local stderr_file
 		local http_ok_list=""
 		local http_file
 
 		# feeds not yet retrieved are suspicious
-		not_retrieved="$( grep -vE "^#" "${F2E_FEEDLIST_FILE}" )"
+		while read not_retrieved_info ; do
+			feed_uri="$( f2e_get_feed_uri_from_list_line "${not_retrieved_info}" )"
+
+			f2e_is_feed_line_disabled "${not_retrieved_info}" && continue
+
+			local feed_hash="$( f2e_hash "${feed_uri}" )"
+			local feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
+
+			if [ ! -d "${feed_dir}" ] || [ ! -f "${feed_dir}/feed.xml" ] ; then
+				not_retrieved="${not_retrieved}${feed_uri}\n"
+			fi
+		done < "${F2E_FEEDLIST_FILE}"
 
 		# feeds for which curl output something on stderr are suspicious
 		for stderr_file in $( find "${F2E_FEEDS_DIR}" -name feed.xml.stderr -and -not -size 0c ) ; do
@@ -398,7 +410,7 @@ f2e_feed_print_status()
 				200|304)
 					;;
 				*)
-					http_ok_list="${http_ok_list}$( cat "$( dirname "${feed_dir}" )/uri" )\n"
+					http_ok_list="${http_ok_list}$( cat "$( dirname "${http_file}" )/uri" )\n"
 					;;
 			esac
 		done
