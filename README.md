@@ -80,6 +80,33 @@ Print the status of an existing feed:
 Print the status of the feeds in error:
 `feeds2email status`
 
+## Workarounds
+
+### Publishers that block unknown HTTP User Agents
+Some publishers blocks HTTP requests with unknown User Agents. They probably
+try to stop robots, spammers, or even unknown probably-badly-implemented news
+readers. Here is how to workaround the problem.
+
+You may try the following trick if feeds2email reports HTTP 403 Forbidden for
+that feed:
+```
+  feeds2email status https://github.com/didier-barvaux/feeds2email/commits/master.atom`
+  ...
+  HTTP status..... HTTP/1.1 403 Forbidden
+  ...
+```
+
+Define a fake User Agent for feeds2email to use with such feeds (better choose
+a well-known one such as the one of Mozilla Firefox):
+  `feeds2email config fake-user-agent 'Mozilla/5.0 (X11; Linux x86_64; rv:31.0) Gecko/20100101 Firefox/31.0'`
+
+Now, tell feeds2email to fake the HTTP User Agent for the problematic feed:
+  `feeds2email del https://github.com/didier-barvaux/feeds2email/commits/master.atom`
+  `feeds2email add https://github.com/didier-barvaux/feeds2email/commits/master.atom fake-user-agent`
+
+Finally, try again to update the feed:
+  `feeds2email update https://github.com/didier-barvaux/feeds2email/commits/master.atom`
+
 ## Thanks
 Thanks to thuban <thuban@yeuxdelibad.net> and his srss software for the ideas:
 http://git.yeuxdelibad.net/srss/

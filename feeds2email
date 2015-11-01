@@ -67,9 +67,10 @@ f2e_print_usage()
 	echo "Usage: ${SCRIPT_NAME} [options] config"
 	echo "       ${SCRIPT_NAME} [options] config email-to   [<email>]"
 	echo "       ${SCRIPT_NAME} [options] config email-from [<email>]"
+	echo "       ${SCRIPT_NAME} [options] config fake-user-agent [<string>]"
 	echo "       ${SCRIPT_NAME} [options] list"
 	echo "       ${SCRIPT_NAME} [options] status  [<feed-uri>]"
-	echo "       ${SCRIPT_NAME} [options] add     <feed-uri>"
+	echo "       ${SCRIPT_NAME} [options] add     <feed-uri> [<flag>[,<flag>...]]"
 	echo "       ${SCRIPT_NAME} [options] del     <feed-uri>"
 	echo "       ${SCRIPT_NAME} [options] enable  <feed-uri>"
 	echo "       ${SCRIPT_NAME} [options] disable <feed-uri>"
@@ -77,9 +78,7 @@ f2e_print_usage()
 	echo "       ${SCRIPT_NAME} [options] update"
 	echo ""
 	echo "Commands:"
-	echo "  config             Print the current configuration"
-	echo "  config email-to    Print/configure the name and email address of the user"
-	echo "  config email-from  Print/configure the sender email address"
+	echo "  config             Print/set the configuration"
 	echo "  list               List the registered feeds"
 	echo "  add                Register a new feed (and enable it)"
 	echo "  del                Unregister an existing feed"
@@ -88,6 +87,16 @@ f2e_print_usage()
 	echo "  disable            Disable an existing feed"
 	echo "  update             Retrieve, parse and send new articles for all"
 	echo "                       registered feeds or the specified one"
+	echo ""
+	echo "Configuration attributes:"
+	echo "  email-to           Print/configure the name and email address of the user"
+	echo "  email-from         Print/configure the sender email address"
+	echo "  fake-user-agent    Print/configure the fake user agent for download"
+	echo "                       (only apply to feeds with the fake-user-agent flag)"
+	echo ""
+	echo "Feed flags:"
+	echo "  fake-user-agent    Fake the HTTP User-Agent for this feed"
+	echo "                       (config attribute fake-user-agent shall be set)"
 	echo ""
 	echo "Options:"
 	echo "  email          An email address"
@@ -150,6 +159,64 @@ f2e_mdate()
 	date --date="@${timestamp}" | awk '{ printf $0 }'
 }
 
+# get feed URI from a line in the feed list
+f2e_get_feed_uri_from_list_line()
+{
+	local feed_line="$1"
+	echo -n "${feed_line}" | awk '{ printf $1 }' | sed -e 's/#//'
+}
+
+# get feed flags from a line in the feed list
+f2e_get_feed_flags_from_list_line()
+{
+	local feed_line="$1"
+	echo -n "${feed_line}" | awk '{ printf $2 }'
+}
+
+# whether the given feed is registered or not
+# return 0 if registered, 1 if not
+f2e_is_feed_registered()
+{
+	local feed_uri="$1"
+	grep -q "^#\?${feed_uri}\( \+.*\)\?$" "${F2E_FEEDLIST_FILE}"
+	return $?
+}
+
+# whether the given feed is disabled or not
+# return 0 if disabled, 1 if not
+f2e_is_feed_disabled()
+{
+	local feed_uri="$1"
+	grep -q "^#${feed_uri}\( \+.*\)\?$" "${F2E_FEEDLIST_FILE}"
+	return $?
+}
+
+# whether the given line in the feed list is disabled or not
+# return 0 if disabled, 1 if not
+f2e_is_feed_line_disabled()
+{
+	local feed_line="$1"
+	echo -n "${feed_line}" | grep -q "^#"
+	return $?
+}
+
+# get feed flags for the given feed URI
+f2e_get_feed_flags()
+{
+	local feed_uri="$1"
+	grep "^#\?${feed_uri}\( \+.*\)\?$" "${F2E_FEEDLIST_FILE}" | awk '{ printf $2 }'
+}
+
+# whether the given flag is enabled or not
+# return 0 if enabled, 1 if not
+f2e_is_feed_flag_enabled()
+{
+	local feed_flags="$1"
+	local feed_flag="$2"
+	echo -n "${feed_flags}" | grep -q "\(^${feed_flag}$\|^${feed_flag},\|,${feed_flag},\|,${feed_flag}$\)"
+	return $?
+}
+
 # print current configuration or configure
 f2e_config()
 {
@@ -160,7 +227,7 @@ f2e_config()
 
 		# print all configuration attributes
 		echo "configuration:"
-		for config_attr in email-to email-from ; do
+		for config_attr in email-to email-from fake-user-agent ; do
 			echo "  ${config_attr} = $( cat "${F2E_CONFIG_DIR}/${config_attr}" 2>/dev/null )"
 		done
 
@@ -170,7 +237,7 @@ f2e_config()
 
 		# reject unknown attributes
 		case "${config_attr}" in
-			email-to|email-from)
+			email-to|email-from|fake-user-agent)
 				;;
 			*)
 				echo "unknown config attribute '${config_attr}'" >&2
@@ -204,10 +271,12 @@ f2e_feeds_list()
 	while read feed_info ; do
 		local feed_title
 		local feed_uri
+		local feed_flags
 		local feed_hash
 		local feed_dir
 
-		feed_uri="$( echo "${feed_info}" | sed -e 's/^#//' )"
+		feed_uri="$( f2e_get_feed_uri_from_list_line "${feed_info}" )"
+		feed_flags="$( f2e_get_feed_flags_from_list_line "${feed_info}" )"
 
 		# compute a (probably) unique hash for the feed
 		feed_hash="$( f2e_hash "${feed_uri}" )"
@@ -223,7 +292,7 @@ f2e_feeds_list()
 		feed_title="$( cat "${feed_dir}/title" 2>/dev/null )"
 
 		printf "%3d: [" ${feeds_nr}
-		echo "${feed_info}" | grep -qE "^#"
+		f2e_is_feed_line_disabled "${feed_info}"
 		if [ $? -eq 0 ] ; then
 			echo -n " "
 		else
@@ -235,7 +304,11 @@ f2e_feeds_list()
 		else
 			echo -n "${feed_title}"
 		fi
-		echo " (${feed_uri})"
+		echo -n " (${feed_uri})"
+		if [ -n "${feed_flags}" ] ; then
+			echo -n " [${feed_flags}]"
+		fi
+		echo
 
 		feeds_nr=$(( ${feeds_nr} + 1 ))
 
@@ -246,20 +319,15 @@ f2e_feeds_list()
 f2e_feed_add()
 {
 	local feed_uri="$1"
+	local feed_flags="$2"
 
-	grep -q "^${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	f2e_is_feed_registered "${feed_uri}"
 	if [ $? -eq 0 ] ; then
 		echo "cannot add feed '${feed_uri}', feed is already registered" >&2
 		return 1
 	fi
 
-	grep -q "^#${feed_uri}$" "${F2E_FEEDLIST_FILE}"
-	if [ $? -eq 0 ] ; then
-		echo "cannot add feed '${feed_uri}', feed is already registered, but disabled" >&2
-		return 1
-	fi
-
-	echo "${feed_uri}" >> "${F2E_FEEDLIST_FILE}"
+	echo "${feed_uri} ${feed_flags}" >> "${F2E_FEEDLIST_FILE}"
 	ret=$?
 	if [ ${ret} -ne 0 ] ; then
 		echo "cannot add feed '${feed_uri}' (${ret})"
@@ -275,13 +343,13 @@ f2e_feed_del()
 {
 	local feed_uri="$1"
 
-	grep -q "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	f2e_is_feed_registered "${feed_uri}"
 	if [ $? -ne 0 ] ; then
 		echo "cannot remove feed '${feed_uri}', feed is not registered" >&2
 		return 1
 	fi
 
-	grep -v "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}" > "${F2E_TMP_FILE}"
+	grep -v "^#\?${feed_uri}\( \+.*\)\?$" "${F2E_FEEDLIST_FILE}" > "${F2E_TMP_FILE}"
 	ret=$?
 	if [ ${ret} -eq 0 ] ; then
 		mv -f "${F2E_TMP_FILE}" "${F2E_FEEDLIST_FILE}"
@@ -352,26 +420,31 @@ f2e_feed_print_status()
 	else
 
 		# print the status of an existing feed
-		grep -q "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+
+		local feed_flags
+
+		f2e_is_feed_registered "${feed_uri}"
 		if [ $? -ne 0 ] ; then
-			echo "cannot enable feed '${feed_uri}', feed is not registered" >&2
+			echo "cannot print status of feed '${feed_uri}', feed is not registered" >&2
 			return 1
 		fi
 
-		grep -q "^${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+		f2e_is_feed_disabled "${feed_uri}"
 		if [ $? -eq 0 ] ; then
-			feed_status="enabled"
-		else
 			feed_status="disabled"
+		else
+			feed_status="enabled"
 		fi
 
+		feed_flags="$( grep "^#\?${feed_uri}" "${F2E_FEEDLIST_FILE}" | gawk '{ print $2 }' )"
 		feed_hash="$( f2e_hash "${feed_uri}" )"
 		feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
 
 		echo "feed '${feed_uri}':"
 
 		if [ ! -d "${feed_dir}" ] || [ ! -f "${feed_dir}/title" ] ; then
-			echo "  status: ${feed_status} / not retrieved yet"
+			echo "  status.......... ${feed_status} / not retrieved yet"
+			echo "  flags........... ${feed_flags}"
 		else
 			feed_title="$( cat "${feed_dir}/title" )"
 			articles_nr="$( \ls -1 ${feed_dir}/items/all/* 2>/dev/null | wc -l )"
@@ -381,6 +454,7 @@ f2e_feed_print_status()
 			echo "  articles........ ${articles_nr} (with ${new_articles_nr} new)"
 			echo "  last fetch...... $( f2e_mdate "${feed_dir}/feed.xml.headers" )"
 			echo "  last change..... $( f2e_mdate "${feed_dir}/feed.xml" )"
+			echo "  flags........... ${feed_flags}"
 			echo "  hash............ ${feed_hash}"
 			echo "  directory....... ${feed_dir}"
 			echo "  HTTP status..... $( head -n 1 "${feed_dir}/feed.xml.headers" )"
@@ -400,19 +474,19 @@ f2e_feed_enable()
 {
 	local feed_uri="$1"
 
-	grep -q "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	f2e_is_feed_registered "${feed_uri}"
 	if [ $? -ne 0 ] ; then
 		echo "cannot enable feed '${feed_uri}', feed is not registered" >&2
 		return 1
 	fi
 
-	grep -q "^#${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	f2e_is_feed_disabled "${feed_uri}"
 	if [ $? -ne 0 ] ; then
 		echo "cannot enable feed '${feed_uri}', feed is already enabled" >&2
 		return 1
 	fi
 
-	sed -i -e "s|^#${feed_uri}$|${feed_uri}|" "${F2E_FEEDLIST_FILE}"
+	sed -i -e "s|^#${feed_uri}\( \+.*\)\?$|${feed_uri}\1|" "${F2E_FEEDLIST_FILE}"
 	ret=$?
 	if [ ${ret} -ne 0 ] ; then
 		echo "cannot enable feed '${feed_uri}' (${ret})"
@@ -428,19 +502,19 @@ f2e_feed_disable()
 {
 	local feed_uri="$1"
 
-	grep -q "^#\?${feed_uri}$" "${F2E_FEEDLIST_FILE}"
+	f2e_is_feed_registered "${feed_uri}"
 	if [ $? -ne 0 ] ; then
 		echo "cannot disable feed '${feed_uri}', feed is not registered" >&2
 		return 1
 	fi
 
-	grep -q "^${feed_uri}$" "${F2E_FEEDLIST_FILE}"
-	if [ $? -ne 0 ] ; then
+	f2e_is_feed_disabled "${feed_uri}"
+	if [ $? -eq 0 ] ; then
 		echo "cannot disable feed '${feed_uri}', feed is already disabled" >&2
 		return 1
 	fi
 
-	sed -i -e "s|^${feed_uri}$|\#${feed_uri}|" "${F2E_FEEDLIST_FILE}"
+	sed -i -e "s|^${feed_uri}\( \+.*\)\?$|\#${feed_uri}\1|" "${F2E_FEEDLIST_FILE}"
 	ret=$?
 	if [ ${ret} -ne 0 ] ; then
 		echo "cannot disable feed '${feed_uri}' (${ret})"
@@ -457,8 +531,21 @@ f2e_feed_download()
 {
 	local feed_uri="$1"
 	local feed_output_file="$2"
+	local feed_flags="$3"
+	local user_agent="${F2E_USER_AGENT}"
 	local feed_last_modified
 	local feed_etag
+
+	f2e_is_feed_flag_enabled "${feed_flags}" "fake-user-agent"
+	if [ $? -eq 0 ] ; then
+		if [ -z "${F2E_FAKE_USER_AGENT}" ] ; then
+			f2e_log "notice" "HTTP fake user agent requested for feed '${feed_uri}', but it is not defined yet"
+			f2e_log "notice" "fix the problem with:"
+			f2e_log "notice" "  ${SCRIPT_NAME} config fake-user-agent '<string>'"
+		else
+			user_agent="${F2E_FAKE_USER_AGENT}"
+		fi
+	fi
 
 	if [ -f "${feed_output_file}.last_modified" ] ; then
 		feed_last_modified=" $( cat "${feed_output_file}.last_modified" )"
@@ -477,7 +564,7 @@ f2e_feed_download()
 	     --proto -all,https,+http \
 	     --compressed \
 	     --location \
-	     --user-agent "${F2E_USER_AGENT}" \
+	     --user-agent "${user_agent}" \
 	     --referer "${SCRIPT_URI}" \
 	     --header "If-Modified-Since:${feed_last_modified}" \
 	     --header "If-None-Match:${feed_etag}" \
@@ -568,9 +655,11 @@ f2e_get_one_feed()
 {
 	local feeds_max_nr=$1
 	local feeds_nr=$2
-	local feed_info="$3"
+	local feed_uri="$3"
+	local feed_flags="$4"
 
 	local feed_uri
+	local feed_flags
 	local feed_type="unknown"
 	local feed_title
 	local feed_hash
@@ -579,15 +668,6 @@ f2e_get_one_feed()
 	local feed_line
 	local feed_item_content
 	local feed_item_title
-
-	feed_uri="$( echo "${feed_info}" | sed -e 's/^#//' )"
-
-	# skip feed if disabled
-	echo "${feed_info}" | grep -qE "^#"
-	if [ $? -eq 0 ] ; then
-		f2e_log "info" "* [${feeds_nr}/${feeds_max_nr}] ${feed_uri} [skip]"
-		return 1
-	fi
 
 	f2e_log "info" "* [${feeds_nr}/${feeds_max_nr}] ${feed_uri}"
 
@@ -605,7 +685,7 @@ f2e_get_one_feed()
 
 	# download the feed content
 	feed_file="${feed_dir}/feed.xml"
-	f2e_feed_download "${feed_uri}" "${feed_file}"
+	f2e_feed_download "${feed_uri}" "${feed_file}" "${feed_flags}"
 	ret=$?
 	if [ ${ret} -eq 2 ] ; then
 		f2e_log "info" "feed '${feed_uri}' didn't change, nothing new to parse"
@@ -754,27 +834,36 @@ f2e_get_feeds()
 		f2e_log "info" "downloading all ${feeds_max_nr} feeds:"
 		feeds_nr=1
 		while read feed_info ; do
-			f2e_get_one_feed ${feeds_max_nr} ${feeds_nr} "${feed_info}"
-			status=$(( ${status} + $? ))
+			local feed_uri="$( f2e_get_feed_uri_from_list_line "${feed_info}" )"
+			local feed_flags="$( f2e_get_feed_flags_from_list_line "${feed_info}" )"
+
+			# skip feed if disabled
+			f2e_is_feed_line_disabled "${feed_info}"
+			if [ $? -eq 0 ] ; then
+				f2e_log "info" "* [${feeds_nr}/${feeds_max_nr}] ${feed_uri} [skip]"
+			else
+				f2e_get_one_feed ${feeds_max_nr} ${feeds_nr} "${feed_uri}" "${feed_flags}"
+				status=$(( ${status} + $? ))
+			fi
 			feeds_nr=$(( ${feeds_nr} + 1 ))
 		done < "${F2E_FEEDLIST_FILE}"
 
 	else
 
-		grep -q "^#\?${scope}$" "${F2E_FEEDLIST_FILE}"
+		f2e_is_feed_registered "${scope}"
 		if [ $? -ne 0 ] ; then
 			echo "cannot update feed '${scope}', feed is not registered" >&2
 			return 1
 		fi
 
-		grep -q "^#${scope}$" "${F2E_FEEDLIST_FILE}"
+		f2e_is_feed_disabled "${scope}"
 		if [ $? -eq 0 ] ; then
 			echo "cannot update feed '${scope}', feed is disabled" >&2
 			return 1
 		fi
 
 		f2e_log "info" "downloading feed '${scope}':"
-		f2e_get_one_feed 1 1 "${scope}"
+		f2e_get_one_feed 1 1 "${scope}" "$( f2e_get_feed_flags "${scope}" )"
 		status=$(( ${status} + $? ))
 
 	fi
@@ -914,7 +1003,11 @@ case "${f2e_cmd}" in
 		expected_args_min_nr=0
 		expected_args_max_nr=0
 		;;
-	add|del|enable|disable)
+	add)
+		expected_args_min_nr=1
+		expected_args_max_nr=2
+		;;
+	del|enable|disable)
 		expected_args_min_nr=1
 		expected_args_max_nr=1
 		;;
@@ -954,7 +1047,11 @@ case "${f2e_cmd}" in
 		f2e_config_attr="$1"
 		f2e_config_val="$2"
 		;;
-	add|del|status|enable|disable)
+	add)
+		f2e_feed_uri="$1"
+		f2e_feed_flags="$2"
+		;;
+	del|status|enable|disable)
 		f2e_feed_uri="$1"
 		;;
 	update)
@@ -993,6 +1090,7 @@ if [ ! -f "${F2E_FEEDLIST_FILE}" ] ; then
 fi
 F2E_EMAIL_FROM="$( cat "${F2E_CONFIG_DIR}/email-from" 2>/dev/null )"
 F2E_EMAIL_TO="$( cat "${F2E_CONFIG_DIR}/email-to" 2>/dev/null )"
+F2E_FAKE_USER_AGENT="$( cat "${F2E_CONFIG_DIR}/fake-user-agent" 2>/dev/null )"
 
 # create a secure temporary file
 F2E_TMP_FILE="$( mktemp --tmpdir "feeds2email.tmp.XXXXXXXXXX" )"
@@ -1016,7 +1114,7 @@ case "${f2e_cmd}" in
 		;;
 	add)
 		# register a new feed
-		f2e_feed_add "${f2e_feed_uri}"
+		f2e_feed_add "${f2e_feed_uri}" "${f2e_feed_flags}"
 		status=$?
 		;;
 	del)
