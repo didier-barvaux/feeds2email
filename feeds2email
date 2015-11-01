@@ -419,7 +419,7 @@ f2e_feed_print_status()
 		local not_retrieved_info
 		local stderr_list=""
 		local stderr_file
-		local http_ok_list=""
+		local http_ko_list=""
 		local http_file
 
 		# print some stats
@@ -479,12 +479,12 @@ f2e_feed_print_status()
 				200|304)
 					;;
 				*)
-					http_ok_list="${http_ok_list}$( cat "$( dirname "${http_file}" )/uri" )\n"
+					http_ko_list="${http_ko_list}$( cat "$( dirname "${http_file}" )/uri" )\n"
 					;;
 			esac
 		done
 
-		local feed_uris="$( echo -e "${not_retrieved}${stderr_list}${http_ok_list}" | sort | uniq )"
+		local feed_uris="$( echo -e "${not_retrieved}${stderr_list}${http_ko_list}" | sort | uniq )"
 		local feeds_nr=1
 		[ -n "${feed_uris}" ] && echo "suspicious feeds:"
 		for feed_uri in $( echo -e "${feed_uris}" ) ; do
@@ -495,9 +495,15 @@ f2e_feed_print_status()
 			echo -e "${not_retrieved}" | grep -q "^${feed_uri}$" && \
 				echo "     * not retrieved yet"
 			echo -e "${stderr_list}" | grep -q "^${feed_uri}$" && \
-				echo "     * download issued errors: $( cat "${feed_dir}/feed.xml.stderr" )"
-			echo -e "${http_ok_list}" | grep -q "^${feed_uri}$" && \
-				echo "     * download issued HTTP code $( f2e_get_feed_http_status_code "${feed_dir}/feed.xml.headers}" )"
+				echo "     * last download issued errors: $( cat "${feed_dir}/feed.xml.stderr" )"
+			echo -e "${http_ko_list}" | grep -q "^${feed_uri}$"
+			if [ $? -eq 0 ] ; then
+				if [ -s "${feed_dir}/feed.xml.headers" ] ; then
+					echo "     * last download issued HTTP code $( f2e_get_feed_http_status_code "${feed_dir}/feed.xml.headers" )"
+				else
+					echo "     * last download failed"
+				fi
+			fi
 			feeds_nr=$(( ${feeds_nr} + 1 ))
 		done
 		[ -n "${feed_uris}" ] && echo
