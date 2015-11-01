@@ -152,7 +152,7 @@ f2e_hash()
 # strip empty lines but also spaces at the beginning and end of the given string
 f2e_trim()
 {
-	echo -en "$1" | sed -e 's/^ *//' -e 's/ *$//' | grep -vE '^$'
+	echo -en "$1" | sed -e 's/^ *//' -e 's/ *$//' | tr -d '\t\r\n' | grep -vE '^$'
 	return $?
 }
 
@@ -846,9 +846,10 @@ f2e_get_one_feed()
 			fi
 		fi
 	fi
+	feed_title="$( f2e_trim "${feed_title}" )"
 
 	# write title in the cache for later use
-	echo "${feed_title}" > "${feed_dir}/title"
+	echo -n "${feed_title}" > "${feed_dir}/title"
 	# print it on console for info
 	f2e_log "info" "  ${feed_title} [${feed_type}]"
 
