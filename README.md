@@ -5,6 +5,23 @@ then send them to you by email.
 * homepage: https://github.com/didier-barvaux/feeds2email
 * license:  Simplified BSD License (see COPYING)
 
+## Features
+* Supported formats:
+  * [RSS](https://en.wikipedia.org/wiki/RSS)
+  * [Atom](https://en.wikipedia.org/wiki/Atom_%28standard%29)
+  * RDF/RSS
+* Works with all feeds:
+  * support HTTP and HTTPS thanks to [curl](http://curl.haxx.se/),
+  * support user-defined HTTP User Agent (eg. for servers with strict anti-spam policies),
+  * support user-defined HTTP cookies (eg. for authentication).
+* Easy to setup.
+* User-friendly CLI interface.
+* Portable: use only Bash shell, curl, some common tools and some Python.
+* Be respectful with publishers:
+  * use HTTP `Last-Modified` and `If-Modified-Since` headers whenever possible,
+  * use HTTP `ETag` header whenever possible,
+  * use a dedicated User Agent `feeds2email/<version> (https://github.com/didier-barvaux/feeds2email)`.
+
 ## Installation
 Build the man page as normal user: `make all`
 
@@ -160,7 +177,7 @@ $ feeds2email add https://github.com/didier-barvaux/feeds2email/commits/master.a
 
 Then, try again to update the feed:
 ```
-feeds2email update https://github.com/didier-barvaux/feeds2email/commits/master.atom
+$ feeds2email update https://github.com/didier-barvaux/feeds2email/commits/master.atom
 ```
 
 ## Thanks
