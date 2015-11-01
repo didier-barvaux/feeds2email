@@ -13,7 +13,8 @@ then send them to you by email.
 * Works with all feeds:
   * support HTTP and HTTPS thanks to [curl](http://curl.haxx.se/),
   * support user-defined HTTP User Agent (eg. for servers with strict anti-spam policies),
-  * support user-defined HTTP cookies (eg. for authentication).
+  * support user-defined HTTP cookies (eg. for authentication),
+  * support crazy servers that returns XML with HTML Content-Type.
 * Easy to setup.
 * User-friendly CLI interface.
 * Portable: use only Bash shell, curl, some common tools and some Python.
@@ -173,6 +174,22 @@ Tell feeds2email to use some cookies for the problematic feed:
 ```
 $ feeds2email del https://github.com/didier-barvaux/feeds2email/commits/master.atom
 $ feeds2email add https://github.com/didier-barvaux/feeds2email/commits/master.atom cookie=$( echo "var1=val1; var2=val2; var3=val3" | base64 --wrap=0 )
+```
+
+Then, try again to update the feed:
+```
+$ feeds2email update https://github.com/didier-barvaux/feeds2email/commits/master.atom
+```
+
+### Handling XML served as HTML
+Some HTTP servers are kind of crazy. They serve XML content with the text/html
+Content-Type. Whether this is a bug in the server's code or in its configuration
+doesn't help to get the feed content. Here is how to workaround the problem.
+
+Tell feeds2email not to check for the Content-Type for the problematic feed:
+```
+$ feeds2email del https://github.com/didier-barvaux/feeds2email/commits/master.atom
+$ feeds2email add https://github.com/didier-barvaux/feeds2email/commits/master.atom no-content-type
 ```
 
 Then, try again to update the feed:

@@ -99,6 +99,7 @@ f2e_print_usage()
 	echo "                       (config attribute fake-user-agent shall be set)"
 	echo "  cookie=<base64>    Use the given cookie for this feed"
 	echo "                       (encode the cookie data with 'base64 --wrap=0')"
+	echo "  no-content-type    Ignore the server's Content-Type for this feed"
 	echo ""
 	echo "Options:"
 	echo "  email          An email address"
@@ -682,11 +683,16 @@ f2e_feed_download()
 	esac
 
 	# reject HTML content, it makes pyhtml2text output too many cryptic errors
-	f2e_get_feed_http_header 'Content-Type' "${feed_output_file}.headers" | \
-		grep -q "text/html"
+	f2e_is_feed_flag_enabled "${feed_flags}" "no-content-type"
 	if [ $? -eq 0 ] ; then
-		f2e_log "notice" "failed to download feed '${feed_uri}': received some HTML"
-		return 1
+		f2e_log "info" "ignore server's Content-Type for feed '${feed_uri}'"
+	else
+		f2e_get_feed_http_header 'Content-Type' "${feed_output_file}.headers" | \
+			grep -q "text/html"
+		if [ $? -eq 0 ] ; then
+			f2e_log "notice" "failed to download feed '${feed_uri}': received some HTML"
+			return 1
+		fi
 	fi
 
 	# in case of 200 OK, record the Last-Modified and ETag headers
