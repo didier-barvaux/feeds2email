@@ -413,6 +413,8 @@ f2e_feed_print_status()
 
 		local total_fetches_nr=0
 		local http_code_file
+		local duration_download_average
+		local duration_email_average
 		local not_retrieved=""
 		local not_retrieved_info
 		local stderr_list=""
@@ -433,7 +435,22 @@ f2e_feed_print_status()
 			echo "   * code ${http_code} was received ${http_code_nr} times"
 			total_fetches_nr=$(( ${total_fetches_nr} + ${http_code_nr} ))
 		done
-		echo "* ${total_fetches_nr} HTTP fetches in total"
+		echo "   * ${total_fetches_nr} HTTP fetches in total"
+		echo "* durations:"
+		if [ ! -f "${F2E_STATS_DIR}/duration_download" ] ; then
+			duration_download_average=0
+		else
+			duration_download_average="$( gawk 'BEGIN { sum=0 ; count=0 } { sum+=$1 ; count++ } END { printf sum/count }' \
+			                              "${F2E_STATS_DIR}/duration_download" )"
+		fi
+		echo "   * ${duration_download_average} seconds for downloading (average)"
+		if [ ! -f "${F2E_STATS_DIR}/duration_email_average" ] ; then
+			duration_email_average=0
+		else
+			duration_email_average="$( gawk 'BEGIN { sum=0 ; count=0 } { sum+=$1 ; count++ } END { printf sum/count }' \
+			                           "${F2E_STATS_DIR}/duration_email" )"
+		fi
+		echo "   * ${duration_email_average} seconds for emailing (average)"
 		echo
 
 		# feeds not yet retrieved are suspicious
@@ -693,8 +710,12 @@ f2e_feed_download()
 		f2e_log "notice" "failed to download feed '${feed_uri}': malformed HTTP status code"
 		return 1
 	fi
-	echo -n $(( $( cat "${F2E_STATS_DIR}/http_code_${http_code}" ) + 1 )) \
-		> "${F2E_STATS_DIR}/http_code_${http_code}"
+	if [ ! -f "${F2E_STATS_DIR}/http_code_${http_code}" ] ; then
+		echo -n "1" > "${F2E_STATS_DIR}/http_code_${http_code}"
+	else
+		echo -n $(( $( cat "${F2E_STATS_DIR}/http_code_${http_code}" ) + 1 )) \
+			> "${F2E_STATS_DIR}/http_code_${http_code}"
+	fi
 	case "${http_code}" in
 		200)
 			# OK, continue
@@ -967,6 +988,15 @@ f2e_get_feeds()
 	time_diff=$(( ${time_stop} - ${time_start} ))
 	f2e_log "info" "feeds downloaded in ${time_diff} seconds"
 
+	# record the download duration for stats
+	echo "${time_diff}" >> "${F2E_STATS_DIR}/duration_download"
+	local durations_nr=$( wc -l < "${F2E_STATS_DIR}/duration_download" )
+	if [ ${durations_nr} -gt 100 ] ; then
+		tail -n $(( ${durations_nr} - 1 )) "${F2E_STATS_DIR}/duration_download" \
+			> "${F2E_TMP_FILE}" \
+			&& cp -f "${F2E_TMP_FILE}" "${F2E_STATS_DIR}/duration_download"
+	fi
+
 	return ${status}
 }
 
@@ -1073,6 +1103,15 @@ f2e_send_emails()
 	time_stop="$( date +%s )"
 	time_diff=$(( ${time_stop} - ${time_start} ))
 	f2e_log "info" "new articles sent in ${time_diff} seconds"
+
+	# record the email duration for stats
+	echo "${time_diff}" >> "${F2E_STATS_DIR}/duration_email"
+	local durations_nr=$( wc -l < "${F2E_STATS_DIR}/duration_email" )
+	if [ ${durations_nr} -gt 100 ] ; then
+		tail -n $(( ${durations_nr} - 1 )) "${F2E_STATS_DIR}/duration_email" \
+			> "${F2E_TMP_FILE}" \
+			&& cp -f "${F2E_TMP_FILE}" "${F2E_STATS_DIR}/duration_email"
+	fi
 
 	return ${status}
 }
