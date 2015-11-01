@@ -451,6 +451,8 @@ f2e_feed_disable()
 	return ${ret}
 }
 
+# download the given URI to the given local file
+# return 0 in case of success, 1 in case of failure, 2 in case content didn't change
 f2e_feed_download()
 {
 	local feed_uri="$1"
@@ -470,6 +472,7 @@ f2e_feed_download()
 		feed_etag=""
 	fi
 
+	# download the feed (only if server says that it changed)
 	curl --silent \
 	     --proto -all,https,+http \
 	     --compressed \
@@ -487,31 +490,77 @@ f2e_feed_download()
 	     "${feed_uri}"
 	ret=$?
 
-	if [ ${ret} -eq 0 ] ; then
-		feed_last_modified="$( grep -E "^Last-Modified: " "${feed_output_file}.headers" | \
-		                       tail -n 1 | \
-		                       awk '{ $1="" ; print $0 }' | \
-		                       sed -e 's/^ *//' | \
-		                       tr -d '\r' )"
-		if [ -z "${feed_last_modified}" ] ; then
-			rm -f "${feed_output_file}.last_modified"
+	# print a detailled message in case of failure
+	if [ ${ret} -ne 0 ] ; then
+		local msg
+		if [ ${ret} -eq 6 ] ; then
+			msg="Couldn't resolve host. The given remote host was not resolved."
+		elif [ ${ret} -eq 7 ] ; then
+			msg="Failed to connect to host."
+		elif [ ${ret} -eq 28 ] ; then
+			msg="Operation timeout. The specified time-out period was reached according to the conditions."
+		elif [ ${ret} -eq 35 ] ; then
+			msg="SSL connect error. The SSL handshaking failed."
+		elif [ ${ret} -eq 51 ] ; then
+			msg="The peer's SSL certificate or SSH MD5 fingerprint was not OK."
+		elif [ ${ret} -eq 52 ] ; then
+			msg="The server didn't reply anything, which here is considered an error."
+		elif [ ${ret} -eq 60 ] ; then
+			msg="Peer certificate cannot be authenticated with known CA certificates."
+		elif [ ${ret} -eq 61 ] ; then
+			msg="Unrecognized transfer encoding."
+		elif [ ${ret} -eq 63 ] ; then
+			msg="Maximum file size exceeded."
 		else
-			echo -n "${feed_last_modified}" > "${feed_output_file}.last_modified"
+			msg="no description yet"
 		fi
-
-		feed_etag="$( grep -E "^ETag: " "${feed_output_file}.headers" | \
-		              tail -n 1 | \
-		              awk '{ $1="" ; print $0 }' | \
-		              sed -e 's/^ *//' | \
-		              tr -d '\r' )"
-		if [ -z "${feed_etag}" ] ; then
-			rm -f "${feed_output_file}.etag"
-		else
-			echo -n "${feed_etag}" > "${feed_output_file}.etag"
-		fi
+		f2e_log "notice" "failed to download feed '${feed_uri}': ${msg} (${ret})"
+		return 1
 	fi
 
-	return ${ret}
+	# curl returns 0 even if the feed wasn't retrieved successfully (for example
+	# 403 Forbidden code), so retrieve the exact HTTP status code
+	local http_code="$( head -n 1 "${feed_output_file}.headers" | awk '{ printf $2 }' )"
+	case "${http_code}" in
+		200)
+			# OK, continue
+			;;
+		304)
+			# Not Modified, return that parsing shall be skip
+			return 2
+			;;
+		*)
+			# other codes, return error
+			local http_status="$( head -n 1 "${feed_output_file}.headers" | tr -d '\r\n' )"
+			f2e_log "notice" "failed to download feed '${feed_uri}': received '${http_status}'"
+			return 1
+			;;
+	esac
+
+	# in case of 200 OK, record the Last-Modified and ETag headers
+	# it will eventually save us some download/parsing next time
+	feed_last_modified="$( grep -E "^Last-Modified: " "${feed_output_file}.headers" | \
+	                       tail -n 1 | \
+	                       awk '{ $1="" ; print $0 }' | \
+	                       sed -e 's/^ *//' | \
+	                       tr -d '\r' )"
+	if [ -z "${feed_last_modified}" ] ; then
+		rm -f "${feed_output_file}.last_modified"
+	else
+		echo -n "${feed_last_modified}" > "${feed_output_file}.last_modified"
+	fi
+	feed_etag="$( grep -E "^ETag: " "${feed_output_file}.headers" | \
+	              tail -n 1 | \
+	              awk '{ $1="" ; print $0 }' | \
+	              sed -e 's/^ *//' | \
+	              tr -d '\r' )"
+	if [ -z "${feed_etag}" ] ; then
+		rm -f "${feed_output_file}.etag"
+	else
+		echo -n "${feed_etag}" > "${feed_output_file}.etag"
+	fi
+
+	return 0
 }
 
 # get one single feed
@@ -558,7 +607,10 @@ f2e_get_one_feed()
 	feed_file="${feed_dir}/feed.xml"
 	f2e_feed_download "${feed_uri}" "${feed_file}"
 	ret=$?
-	if [ ${ret} -ne 0 ] ; then
+	if [ ${ret} -eq 2 ] ; then
+		f2e_log "info" "feed '${feed_uri}' didn't change, nothing new to parse"
+		return 0
+	elif [ ${ret} -ne 0 ] ; then
 		f2e_log "notice" "failed to download feed '${feed_uri}' (${ret})"
 		return 1
 	fi
@@ -657,7 +709,7 @@ f2e_get_one_feed()
 	else
 		f2e_log "notice" "feed '${feed_uri}' is neither RSS, Atom nor RDF, ignore it"
 		feeds_nr=$(( ${feeds_nr} + 1 ))
-		continue
+		return 1
 	fi
 
 	# create one cache file per item/entry
