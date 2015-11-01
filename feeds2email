@@ -217,6 +217,22 @@ f2e_is_feed_flag_enabled()
 	return $?
 }
 
+# get the last HTTP status code
+f2e_get_feed_http_status_code()
+{
+	local feed_headers_file="$1"
+	# keep the last HTTP reply (in case of redirection)
+	grep '^HTTP' "${feed_headers_file}" | tail -n 1 | awk '{ printf $2}'
+}
+
+# get the last HTTP status
+f2e_get_feed_http_status()
+{
+	local feed_headers_file="$1"
+	# keep the last HTTP reply (in case of redirection)
+	grep '^HTTP' "${feed_headers_file}" | tail -n 1 | tr -d '\r\n'
+}
+
 # print current configuration or configure
 f2e_config()
 {
@@ -405,7 +421,7 @@ f2e_feed_print_status()
 
 		# feeds with HTTP status codes different than 200 or 304 are suspicious
 		for http_file in $( find "${F2E_FEEDS_DIR}" -name feed.xml.headers ) ; do
-			local http_code="$( head -n 1 "${http_file}" | awk '{ printf $2 }' )"
+			local http_code="$( f2e_get_feed_http_status_code "${http_file}" )"
 			case "${http_code}" in
 				200|304)
 					;;
@@ -418,14 +434,16 @@ f2e_feed_print_status()
 		local feed_uris="$( echo -e "${not_retrieved}${stderr_list}${http_ok_list}" | sort | uniq )"
 		local feeds_nr=1
 		for feed_uri in $( echo -e "${feed_uris}" ) ; do
+			local feed_hash="$( f2e_hash "${feed_uri}" )"
+			local feed_dir="${F2E_FEEDS_DIR}/${feed_hash}/"
 			printf "%3d: " ${feeds_nr}
 			echo "${feed_uri}:"
 			echo -e "${not_retrieved}" | grep -q "^${feed_uri}$" && \
 				echo "     * not retrieved yet"
 			echo -e "${stderr_list}" | grep -q "^${feed_uri}$" && \
-				echo "     * download issued errors: $( cat ${F2E_FEEDS_DIR}/$( f2e_hash "${feed_uri}" )/feed.xml.stderr )"
+				echo "     * download issued errors: $( cat "${feed_dir}/feed.xml.stderr" )"
 			echo -e "${http_ok_list}" | grep -q "^${feed_uri}$" && \
-				echo "     * download issued HTTP code $( head -n 1 ${F2E_FEEDS_DIR}/$( f2e_hash "${feed_uri}" )/feed.xml.headers | awk '{ printf $2 }' )"
+				echo "     * download issued HTTP code $( f2e_get_feed_http_status_code "${feed_dir}/feed.xml.headers}" )"
 			feeds_nr=$(( ${feeds_nr} + 1 ))
 		done
 
@@ -469,7 +487,7 @@ f2e_feed_print_status()
 			echo "  flags........... ${feed_flags}"
 			echo "  hash............ ${feed_hash}"
 			echo "  directory....... ${feed_dir}"
-			echo "  HTTP status..... $( head -n 1 "${feed_dir}/feed.xml.headers" )"
+			echo "  HTTP status..... $( f2e_get_feed_http_status_code "${feed_dir}/feed.xml.headers" )"
 			[ -f "${feed_dir}/feed.xml.last_modified" ] && \
 			echo "  Last-Modified... $( cat "${feed_dir}/feed.xml.last_modified" )"
 			[ -f "${feed_dir}/feed.xml.etag" ] && \
@@ -619,7 +637,7 @@ f2e_feed_download()
 
 	# curl returns 0 even if the feed wasn't retrieved successfully (for example
 	# 403 Forbidden code), so retrieve the exact HTTP status code
-	local http_code="$( head -n 1 "${feed_output_file}.headers" | awk '{ printf $2 }' )"
+	local http_code="$( f2e_get_feed_http_status_code "${feed_output_file}.headers" )"
 	case "${http_code}" in
 		200)
 			# OK, continue
@@ -630,7 +648,7 @@ f2e_feed_download()
 			;;
 		*)
 			# other codes, return error
-			local http_status="$( head -n 1 "${feed_output_file}.headers" | tr -d '\r\n' )"
+			local http_status="$( f2e_get_feed_http_status "${feed_output_file}.headers" )"
 			f2e_log "notice" "failed to download feed '${feed_uri}': received '${http_status}'"
 			return 1
 			;;
