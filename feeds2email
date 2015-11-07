@@ -54,6 +54,8 @@ F2E_FEEDS_DIR="${F2E_CACHE_DIR}/feeds/"
 
 F2E_STATS_DIR="${F2E_CACHE_DIR}/stats/"
 
+F2E_FQDN="$( hostname --fqdn )"
+
 SEP_ITEMS="---item---"
 SEP_FIELDS="---field---"
 
@@ -881,8 +883,13 @@ f2e_get_one_feed()
 	# parse feed items/entries
 	if [ "${feed_type}" = "RSS" ] ; then
 		xmlstarlet sel \
+			-N dc="http://purl.org/dc/elements/1.1/" \
 			-t -m "/rss/channel/item" \
 			-v "title" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "dc:creator" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "guid" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "link" -n \
 			-o ${SEP_FIELDS} -n \
@@ -894,8 +901,13 @@ f2e_get_one_feed()
 	elif [ "${feed_type}" = "RSS encoded" ] ; then
 		xmlstarlet sel \
 		   -N content="http://purl.org/rss/1.0/modules/content/" \
+			-N dc="http://purl.org/dc/elements/1.1/" \
 			-t -m "/rss/channel/item" \
 			-v "title" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "dc:creator" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "guid" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "link" -n \
 			-o ${SEP_FIELDS} -n \
@@ -910,6 +922,10 @@ f2e_get_one_feed()
 			-t -m "/x:feed/x:entry" \
 			-v "x:title" -n \
 			-o ${SEP_FIELDS} -n \
+			-v "x:author/x:name" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "x:id" -n \
+			-o ${SEP_FIELDS} -n \
 			-v "x:link/@href" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:summary" -n \
@@ -923,6 +939,10 @@ f2e_get_one_feed()
 			-t -m "/x:feed/x:entry" \
 			-v "x:title" -n \
 			-o ${SEP_FIELDS} -n \
+			-v "x:author/x:name" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "x:id" -n \
+			-o ${SEP_FIELDS} -n \
 			-v "x:link/@href" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:content" -n \
@@ -934,8 +954,13 @@ f2e_get_one_feed()
 		xmlstarlet sel \
 			-N x="http://purl.org/rss/1.0/" \
 			-N rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" \
+			-N dc="http://purl.org/dc/elements/1.1/" \
 			-t -m "/rdf:RDF/x:item" \
 			-v "x:title" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "dc:creator" -n \
+			-o ${SEP_FIELDS} -n \
+			-n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:link" -n \
 			-o ${SEP_FIELDS} -n \
@@ -1057,8 +1082,9 @@ f2e_send_email()
 	local feed_uri="$3"
 	local feed_hash="$( f2e_hash "${feed_uri}" )"
 	local subject="$4"
-	local body="$5"
-	local to_email="$6"
+	local feed_item_id="$5"
+	local body="$6"
+	local to_email="$7"
 	echo -e "${body}" | base64 | \
 		mail -s "$( f2e_utf8encode "${subject}" )" \
 		     -a "From: $( f2e_utf8encode "${from_name}" ) <${from_email}>" \
@@ -1068,6 +1094,8 @@ f2e_send_email()
 		     -a "Content-Disposition: inline" \
 		     -a "X-RSS-Feed: ${feed_uri}" \
 		     -a "X-RSS-Feed-Hash: ${feed_hash}" \
+			  -a "Message-ID: <${feed_item_id}@${F2E_FQDN}>" \
+			  -a "In-Reply-To: <${feed_item_id}@${F2E_FQDN}>" \
 		     -a "X-Rss: 1" \
 		     "${to_email}"
 	return $?
@@ -1090,9 +1118,12 @@ f2e_send_emails()
 		local feed_title="$( cat "${feed_dir}/title" )"
 		local feed_uri="$( cat "${feed_dir}/uri" )"
 		local feed_item_title=""
+		local feed_item_author=""
+		local feed_item_id=""
 		local feed_item_link=""
 		local feed_item_content=""
 		local parser_state=""
+		local feed_item_from_name=""
 
 		if [ -n "${scope}" ] && [ "${scope}" != "${feed_uri}" ] ; then
 			continue
@@ -1104,6 +1135,20 @@ f2e_send_emails()
 				in_title)
 					if [ "${feed_item_line}" != "${SEP_FIELDS}" ] ; then
 						feed_item_title="${feed_item_title}${feed_item_line}\n"
+					else
+						parser_state="in_author"
+					fi
+					;;
+				in_author)
+					if [ "${feed_item_line}" != "${SEP_FIELDS}" ] ; then
+						feed_item_author="${feed_item_author}${feed_item_line}\n"
+					else
+						parser_state="in_id"
+					fi
+					;;
+				in_id)
+					if [ "${feed_item_line}" != "${SEP_FIELDS}" ] ; then
+						feed_item_id="${feed_item_id}${feed_item_line}\n"
 					else
 						parser_state="in_link"
 					fi
@@ -1124,15 +1169,25 @@ f2e_send_emails()
 			esac
 		done < "${new_feed_item}"
 
-		# normalize title and link
+		# normalize title, author, id and link
 		feed_item_title="$( f2e_trim "${feed_item_title}" )"
+		feed_item_author="$( f2e_trim "${feed_item_author}" )"
+		feed_item_id="$( f2e_trim "${feed_item_id}" )"
 		feed_item_link="$( f2e_trim "${feed_item_link}" )"
+
+		# email from is computed from feed title and item author
+		if [ -n "${feed_item_author}" ] ; then
+			feed_item_from_name="${feed_title}: ${feed_item_author}"
+		else
+			feed_item_from_name="${feed_title}"
+		fi
 
 		f2e_log "info" "  * ${feed_title}: sending new item '${feed_item_title}'"
 		f2e_send_email \
-			"${feed_title}" "${F2E_EMAIL_FROM}" \
+			"${feed_item_from_name}" "${F2E_EMAIL_FROM}" \
 			"${feed_uri}" \
 			"${feed_item_title}" \
+			"${feed_item_id}" \
 			"URL: ${feed_item_link}\n\n$( echo -e "${feed_item_content}" | pyhtml2text --body-width=100 2>"${feed_dir}/html2text.stderr" )\n\nURL: ${feed_item_link}" \
 			"${F2E_EMAIL_TO}"
 		ret=$?
