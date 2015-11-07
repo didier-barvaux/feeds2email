@@ -417,10 +417,12 @@ f2e_feed_print_status()
 		local duration_email_average
 		local not_retrieved=""
 		local not_retrieved_info
-		local stderr_list=""
-		local stderr_file
+		local dl_stderr_list=""
+		local dl_stderr_file
 		local http_ko_list=""
 		local http_file
+		local html2text_stderr_list=""
+		local html2text_stderr_file
 
 		# print some stats
 		echo "statistics:"
@@ -468,8 +470,8 @@ f2e_feed_print_status()
 		done < "${F2E_FEEDLIST_FILE}"
 
 		# feeds for which curl output something on stderr are suspicious
-		for stderr_file in $( find "${F2E_FEEDS_DIR}" -name feed.xml.stderr -and -not -size 0c ) ; do
-			stderr_list="${stderr_list}$( cat "$( dirname "${stderr_file}" )/uri" )\n"
+		for dl_stderr_file in $( find "${F2E_FEEDS_DIR}" -name feed.xml.stderr -and -not -size 0c ) ; do
+			dl_stderr_list="${dl_stderr_list}$( cat "$( dirname "${dl_stderr_file}" )/uri" )\n"
 		done
 
 		# feeds with HTTP status codes different than 200 or 304 are suspicious
@@ -484,7 +486,12 @@ f2e_feed_print_status()
 			esac
 		done
 
-		local feed_uris="$( echo -e "${not_retrieved}${stderr_list}${http_ko_list}" | sort | uniq )"
+		# feeds for which pyhtml2text output something on stderr are suspicious
+		for html2text_stderr_file in $( find "${F2E_FEEDS_DIR}" -name html2text.stderr -and -not -size 0c ) ; do
+			html2text_stderr_list="${html2text_stderr_list}$( cat "$( dirname "${html2text_stderr_file}" )/uri" )\n"
+		done
+
+		local feed_uris="$( echo -e "${not_retrieved}${dl_stderr_list}${http_ko_list}" | sort | uniq )"
 		local feeds_nr=1
 		[ -n "${feed_uris}" ] && echo "suspicious feeds:"
 		for feed_uri in $( echo -e "${feed_uris}" ) ; do
@@ -494,7 +501,7 @@ f2e_feed_print_status()
 			echo "${feed_uri}:"
 			echo -e "${not_retrieved}" | grep -q "^${feed_uri}$" && \
 				echo "     * not retrieved yet"
-			echo -e "${stderr_list}" | grep -q "^${feed_uri}$" && \
+			echo -e "${dl_stderr_list}" | grep -q "^${feed_uri}$" && \
 				echo "     * last download issued errors: $( cat "${feed_dir}/feed.xml.stderr" )"
 			echo -e "${http_ko_list}" | grep -q "^${feed_uri}$"
 			if [ $? -eq 0 ] ; then
@@ -504,6 +511,8 @@ f2e_feed_print_status()
 					echo "     * last download failed"
 				fi
 			fi
+			echo -e "${html2text_stderr_list}" | grep -q "^${feed_uri}$" && \
+				echo "     * last transformation from HTML to text issued errors: $( cat "${feed_dir}/html2text.stderr" )"
 			feeds_nr=$(( ${feeds_nr} + 1 ))
 		done
 		[ -n "${feed_uris}" ] && echo
@@ -1115,7 +1124,7 @@ f2e_send_emails()
 			"${feed_title}" "${F2E_EMAIL_FROM}" \
 			"${feed_uri}" \
 			"${feed_item_title}" \
-			"URL: ${feed_item_link}\n\n$( echo -e "${feed_item_content}" | pyhtml2text --body-width=100 )\n\nURL: ${feed_item_link}" \
+			"URL: ${feed_item_link}\n\n$( echo -e "${feed_item_content}" | pyhtml2text --body-width=100 2>"${feed_dir}/html2text.stderr" )\n\nURL: ${feed_item_link}" \
 			"${F2E_EMAIL_TO}"
 		ret=$?
 		if [ ${ret} -ne 0 ] ; then
