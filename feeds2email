@@ -834,7 +834,14 @@ f2e_get_one_feed()
 		feed_title="$( xmlstarlet sel -N x="http://www.w3.org/2005/Atom" \
 		               -t -m "/x:feed" -v "x:title" < "${feed_file}" )"
 		if [ $? -eq 0 ] ; then
-			feed_type="Atom"
+			# feed is Atom, does it use content or summary tags?
+			feed_content="$( xmlstarlet sel -N x="http://www.w3.org/2005/Atom" \
+			                 -t -m "/x:feed/x:entry" -v "x:content" < "${feed_file}" )"
+			if [ $? -eq 0 ] && [ -n "${feed_content}" ] ; then
+				feed_type="Atom (with content)"
+			else
+				feed_type="Atom (with summary)"
+			fi
 		else
 			# maybe RDF?
 			feed_title="$( xmlstarlet sel \
@@ -879,7 +886,20 @@ f2e_get_one_feed()
 			< "${feed_file}" \
 			| xmlstarlet unesc \
 			> "${F2E_TMP_FILE}"
-	elif [ "${feed_type}" = "Atom" ] ; then
+	elif [ "${feed_type}" = "Atom (with summary)" ] ; then
+		xmlstarlet sel \
+			-N x="http://www.w3.org/2005/Atom" \
+			-t -m "/x:feed/x:entry" \
+			-v "x:title" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "x:link/@href" -n \
+			-o ${SEP_FIELDS} -n \
+			-v "x:summary" -n \
+			-o ${SEP_ITEMS} -n \
+			< "${feed_file}" \
+			| xmlstarlet unesc \
+			> "${F2E_TMP_FILE}"
+	elif [ "${feed_type}" = "Atom (with content)" ] ; then
 		xmlstarlet sel \
 			-N x="http://www.w3.org/2005/Atom" \
 			-t -m "/x:feed/x:entry" \
@@ -888,7 +908,6 @@ f2e_get_one_feed()
 			-v "x:link/@href" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:content" -n \
-			-v "x:summary" -n \
 			-o ${SEP_ITEMS} -n \
 			< "${feed_file}" \
 			| xmlstarlet unesc \
