@@ -638,6 +638,7 @@ f2e_feed_download()
 	local cookie=""
 	local feed_last_modified
 	local feed_etag
+	local feed_server
 
 	f2e_is_feed_flag_enabled "${feed_flags}" "fake-user-agent"
 	if [ $? -eq 0 ] ; then
@@ -772,6 +773,14 @@ f2e_feed_download()
 	if [ -z "${feed_etag}" ] ; then
 		rm -f "${feed_output_file}.etag"
 	else
+		# workaround for Apache bug #39727: strip -gzip suffix from ETags retrieved
+		# from Apache servers
+		# see https://bz.apache.org/bugzilla/show_bug.cgi?id=39727 for details
+		feed_server="$( f2e_get_feed_http_header 'Server' "${feed_output_file}.headers" )"
+		echo -n "${feed_server}" | grep -q '^Apache'
+		if [ $? -eq 0 ] ; then
+			feed_etag="$( echo -n "${feed_etag}" | sed -e 's/-gzip"$/"/' )"
+		fi
 		echo -n "${feed_etag}" > "${feed_output_file}.etag"
 	fi
 
