@@ -1141,7 +1141,7 @@ f2e_send_emails()
 					;;
 				in_author)
 					if [ "${feed_item_line}" != "${SEP_FIELDS}" ] ; then
-						feed_item_author="${feed_item_author}${feed_item_line}\n"
+						feed_item_author="${feed_item_author}${feed_item_line}, \n"
 					else
 						parser_state="in_id"
 					fi
@@ -1171,7 +1171,7 @@ f2e_send_emails()
 
 		# normalize title, author, id and link
 		feed_item_title="$( f2e_trim "${feed_item_title}" )"
-		feed_item_author="$( f2e_trim "${feed_item_author}" )"
+		feed_item_author="$( f2e_trim "${feed_item_author}" | sed -e 's/,/, /g' -e 's/, $//' )"
 		feed_item_id="$( f2e_trim "${feed_item_id}" )"
 		feed_item_link="$( f2e_trim "${feed_item_link}" )"
 
