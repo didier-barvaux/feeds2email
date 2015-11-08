@@ -928,7 +928,7 @@ f2e_get_one_feed()
 			-o ${SEP_FIELDS} -n \
 			-v "x:id" -n \
 			-o ${SEP_FIELDS} -n \
-			-v "x:link/@href" -n \
+			-v "x:link[@rel='alternate' and @type='text/html']/@href" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:summary" -n \
 			-o ${SEP_ITEMS} -n \
@@ -945,7 +945,7 @@ f2e_get_one_feed()
 			-o ${SEP_FIELDS} -n \
 			-v "x:id" -n \
 			-o ${SEP_FIELDS} -n \
-			-v "x:link/@href" -n \
+			-v "x:link[@rel='alternate' and @type='text/html']/@href" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:content" -n \
 			-o ${SEP_ITEMS} -n \
