@@ -805,8 +805,10 @@ f2e_get_one_feed()
 	local feed_dir
 	local feed_file
 	local feed_line
-	local feed_item_content
 	local feed_item_title
+	local feed_item_author
+	local feed_item
+	local parser_state
 
 	f2e_log "info" "* [${feeds_nr}/${feeds_max_nr}] ${feed_uri}"
 
@@ -978,26 +980,63 @@ f2e_get_one_feed()
 	# create one cache file per item/entry
 	mkdir -p "${feed_dir}/items/all"
 	mkdir -p "${feed_dir}/items/new"
-	feed_item_content=""
 	feed_item_title=""
+	feed_item_author=""
+	feed_item=""
+	parser_state="in_title"
 	while read feed_line ; do
-		if [ "${feed_line}" != "${SEP_ITEMS}" ] ; then
-			[ -z "${feed_item_title}" ] && feed_item_title="${feed_line}"
-			feed_item_content="${feed_item_content}${feed_line}\n"
-		else
-			local feed_item_hash="$( f2e_hash "${feed_item_content}" )"
-			if [ -f "${feed_dir}/items/all/${feed_item_hash}" ] ; then
-				f2e_log "info" "  * old item '${feed_item_title}'"
-			else
-				f2e_log "info" "  * new item '${feed_item_title}'"
-				# record new item in cache
-				echo -e "${feed_item_content}" > "${feed_dir}/items/all/${feed_item_hash}"
-				ln -snf "../all/${feed_item_hash}" \
-				        "${feed_dir}/items/new/${feed_item_hash}"
-			fi
-			feed_item_title=""
-			feed_item_content=""
-		fi
+		case "${parser_state}" in
+			in_title)
+				feed_item="${feed_item}${feed_line}\n"
+				if [ "${feed_line}" != "${SEP_FIELDS}" ] ; then
+					feed_item_title="${feed_item_title}${feed_line}\n"
+				else
+					feed_item_title="$( f2e_trim "${feed_item_title}" )"
+					parser_state="in_author"
+				fi
+				;;
+			in_author)
+				if [ "${feed_line}" != "${SEP_FIELDS}" ] ; then
+					feed_item_author="${feed_item_author}${feed_line}\n"
+				else
+					feed_item="${feed_item}$( echo -ne "${feed_item_author}" | sort )\n${feed_line}\n"
+					parser_state="in_id"
+				fi
+				;;
+			in_id)
+				feed_item="${feed_item}${feed_line}\n"
+				if [ "${feed_line}" = "${SEP_FIELDS}" ] ; then
+					parser_state="in_link"
+				fi
+				;;
+			in_link)
+				feed_item="${feed_item}${feed_line}\n"
+				if [ "${feed_line}" = "${SEP_FIELDS}" ] ; then
+					parser_state="in_content"
+				fi
+				;;
+			in_content)
+				if [ "${feed_line}" != "${SEP_ITEMS}" ] ; then
+					feed_item="${feed_item}${feed_line}\n"
+				else
+					# new or old item?
+					local feed_item_hash="$( f2e_hash "${feed_item}" )"
+					if [ -f "${feed_dir}/items/all/${feed_item_hash}" ] ; then
+						f2e_log "info" "  * old item '${feed_item_title}'"
+					else
+						# record new item in cache
+						f2e_log "info" "  * new item '${feed_item_title}'"
+						echo -e "${feed_item}" > "${feed_dir}/items/all/${feed_item_hash}"
+						ln -snf "../all/${feed_item_hash}" \
+						        "${feed_dir}/items/new/${feed_item_hash}"
+					fi
+					feed_item_title=""
+					feed_item_author=""
+					feed_item=""
+					parser_state="in_title"
+				fi
+				;;
+		esac
 	done < "${F2E_TMP_FILE}"
 
 	return 0
