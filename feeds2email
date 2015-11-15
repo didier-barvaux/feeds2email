@@ -945,6 +945,8 @@ f2e_get_one_feed()
 			-v "x:id" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:link[@rel='alternate' and @type='text/html']/@href" -n \
+			-v "x:link[@rel='alternate' and not(@type)]/@href" -n \
+			-v "x:link[not(@rel)]/@href" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:summary" -n \
 			-o ${SEP_ITEMS} -n \
@@ -962,6 +964,8 @@ f2e_get_one_feed()
 			-v "x:id" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:link[@rel='alternate' and @type='text/html']/@href" -n \
+			-v "x:link[@rel='alternate' and not(@type)]/@href" -n \
+			-v "x:link[not(@rel)]/@href" -n \
 			-o ${SEP_FIELDS} -n \
 			-v "x:content" -n \
 			-o ${SEP_ITEMS} -n \
@@ -1228,7 +1232,22 @@ f2e_send_emails()
 		feed_item_title="$( f2e_trim "${feed_item_title}" )"
 		feed_item_author="$( f2e_trim "${feed_item_author}" | sed -e 's/,/, /g' -e 's/, $//' )"
 		feed_item_id="$( f2e_trim "${feed_item_id}" )"
+		# link: keep only the first link if several were provided
+		feed_item_link="$( echo -n "${feed_item_link}" | head -n 1 )"
 		feed_item_link="$( f2e_trim "${feed_item_link}" )"
+		# link: handle relative URIs
+		echo "${feed_item_link}" | grep -q "^//"
+		if [ $? -eq 0 ] ; then
+			feed_item_link="$( f2e_trim "${feed_uri}" | \
+			                   awk -F'/' '{ printf $1 "/" $2 "/" }' )${feed_item_link}"
+			feed_item_link="$( f2e_trim "${feed_item_link}" | sed -e 's|\([^:]\)/\+|\1/|g' )"
+		fi
+		echo "${feed_item_link}" | grep -q "^/[^/]"
+		if [ $? -eq 0 ] ; then
+			feed_item_link="$( f2e_trim "${feed_uri}" | \
+			                   awk -F'/' '{ printf $1 "/" $2 "/" $3 "/" }' )${feed_item_link}"
+			feed_item_link="$( f2e_trim "${feed_item_link}" | sed -e 's|\([^:]\)/\+|\1/|g' )"
+		fi
 
 		# email from is computed from feed title and item author
 		if [ -n "${feed_item_author}" ] ; then
