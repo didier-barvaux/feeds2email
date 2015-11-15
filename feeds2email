@@ -413,6 +413,7 @@ f2e_feed_print_status()
 
 		# print the status of all feeds in error for quick diagnostic
 
+		local feeds_registered_nr="$( wc -l < "${F2E_FEEDLIST_FILE}" )"
 		local total_fetches_nr=0
 		local http_code_file
 		local duration_download_average
@@ -429,7 +430,7 @@ f2e_feed_print_status()
 		# print some stats
 		echo "statistics:"
 		echo "* feeds:"
-		echo "   * $( wc -l < "${F2E_FEEDLIST_FILE}" ) registered"
+		echo "   * ${feeds_registered_nr} registered"
 		echo "   * $( grep -v '^#' "${F2E_FEEDLIST_FILE}" | wc -l ) enabled"
 		echo "   * $( grep '^#' "${F2E_FEEDLIST_FILE}" | wc -l ) disabled"
 		echo "* HTTP codes:"
@@ -455,6 +456,20 @@ f2e_feed_print_status()
 			                           "${F2E_STATS_DIR}/duration_email" )"
 		fi
 		echo "   * ${duration_email_average} seconds for emailing (average)"
+		echo "* caching:"
+		echo "   * $( find "${F2E_FEEDS_DIR}" -name "feed.xml.etag" | wc -l ) of ${feeds_registered_nr} feeds use ETag header"
+		echo "   * $( find "${F2E_FEEDS_DIR}" -name "feed.xml.last_modified" | wc -l ) of ${feeds_registered_nr} feeds use Last-Modified header"
+		echo "   * $( find "${F2E_FEEDS_DIR}" -name "feed.xml.caching_used" | wc -l ) of ${feeds_registered_nr} feeds successfully used caching at least once"
+		echo "   * feeds that may use caching but did not:"
+		for feed_dir in $( find "${F2E_FEEDS_DIR}" -name "feed.xml" -exec dirname \{\} \; ) ; do
+			if [ ! -f "${feed_dir}/feed.xml.etag" ] && \
+			   [ ! -f "${feed_dir}/feed.xml.last_modified" ] ; then
+				continue
+			fi
+			if [ ! -f "${feed_dir}/feed.xml.caching_used" ] ; then
+				echo "      * $( cat "${feed_dir}/uri" )"
+			fi
+		done
 		echo
 
 		# feeds not yet retrieved are suspicious
@@ -740,6 +755,7 @@ f2e_feed_download()
 			;;
 		304)
 			# Not Modified, return that parsing shall be skip
+			touch "${feed_dir}/feed.xml.caching_used"
 			return 2
 			;;
 		*)
