@@ -694,7 +694,6 @@ f2e_feed_download()
 	     --compressed \
 	     --location \
 	     --user-agent "${user_agent}" \
-	     --referer "${SCRIPT_URI}" \
 	     --cookie "${cookie}" \
 	     --header "If-Modified-Since:${feed_last_modified}" \
 	     --header "If-None-Match:${feed_etag}" \
