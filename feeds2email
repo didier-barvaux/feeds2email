@@ -246,7 +246,7 @@ f2e_get_feed_http_header()
 	local header_type="$1"
 	local feed_headers_file="$2"
 	# keep the last HTTP reply (in case of redirection)
-	grep --text "^${header_type}: " "${feed_headers_file}" | \
+	grep --text -i "^${header_type}: " "${feed_headers_file}" | \
 		tail -n 1 |
 		awk '{ $1="" ; print $0 }' | \
 		sed -e 's/^ *//' | \
